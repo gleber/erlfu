@@ -1,0 +1,11 @@
+{application, erlfu, [
+	{description, "erlfu - erlang implementation of futures"},
+	{vsn, "0.1.0"},
+	{modules, []},
+	{registered, []},
+	{applications, [
+		kernel,
+		stdlib
+	]},
+	{env, []}
+]}.
