@@ -11,6 +11,8 @@
 
          attach/1, handle/1, done/1]).
 
+-export([collect/1]).
+
 -record(future, {pid, ref, result}).
 
 notify(Ref, Pid, Result) when is_pid(Pid) ->
@@ -122,6 +124,10 @@ ready(#future{pid = Pid, ref = Ref, result = undefined} = _Self) ->
         {future_ready, Ref, Ready} ->
             Ready
     end.
+
+collect(Futures) ->
+    [ F:attach() || F <- Futures ],
+    [ F:handle() || F <- Futures ].
 
 %% =============================================================================
 %%

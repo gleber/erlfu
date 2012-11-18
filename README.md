@@ -41,3 +41,14 @@ Values can be bound to future after it is created:
 9> F:get().
 42
 ```
+
+Multiple futures' values can be collected. If one future fails
+everything will fail:
+```
+5> F1 = future:new(fun() -> timer:sleep(3000), 10 end).
+{future,<0.50.0>,#Ref<0.0.0.76697>,undefined}
+6> F2 = future:new(fun() -> timer:sleep(3000), 5 end). 
+{future,<0.53.0>,#Ref<0.0.0.76941>,undefined}
+7> lists:sum(future:collect([F1, F2])).
+15
+```
