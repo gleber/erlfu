@@ -3,6 +3,14 @@
 Futures implemented in Erlang. Very basic implementation using
 processes to represent a future.
 
+## Goals ##
+
+Implement futures/promises framework which allows to chain futures to
+implement reusable mechanisms like timeouts, authentication, sharding,
+etc.
+
+Inspired by http://monkey.org/~marius/talks/twittersystems/
+
 ## Examples ##
 
 Simple example with delayed setting of value:
