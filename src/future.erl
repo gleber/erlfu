@@ -19,6 +19,8 @@
 %% collections
 -export([collect/1, map/1, chain/1, chain/2, wrap/1, wrap/2]).
 
+%% wrappers
+-export([timeout/1, timeout/2]).
 
 -define(is_future(F), is_record(F, future)).
 -define(is_futurable(F), (?is_future(F) orelse is_function(F, 0))).
@@ -194,6 +196,22 @@ collect(Futures) ->
 cancel(#future{pid = Pid, ref = Ref} = F) ->
     Pid ! {cancel, Ref}, %% should do monitoring here to make sure it's dead
     F#future{pid = undefined, ref = Ref}.
+
+timeout(F) ->
+    timeout(F, 5000).
+timeout(F, Timeout) ->
+    wrap(fun(X) ->
+                 Ref = X:attach(),
+                 receive
+                     {future, Ref, Res} ->
+                         X:done(),
+                         handle(Res)
+                 after Timeout ->
+                         X:cancel(),
+                         throw(timeout)
+                 end
+         end, F).
+
 %% =============================================================================
 %%
 %% Tests
