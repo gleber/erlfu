@@ -3,14 +3,18 @@
 -include_lib("proper/include/proper.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
--export([new/0, new/1,
+-export([%% creating
+         new/0, new/1,
 
+         %% manipulating
          set/2, error/2, error/3, error/4, execute/2,
 
-         get/1, realize/1, ready/1,
+         %% getting
+         get/1, realize/1, ready/1, call/1,
+         attach/1, recv/1,
 
-         call/1,
-         attach/1, recv/1, done/1]).
+         %% finishing
+         done/1, cancel/1]).
 
 %% collections
 -export([collect/1, map/1, chain/1, chain/2, wrap/1, wrap/2]).
@@ -187,6 +191,9 @@ collect(Futures) ->
     [ F:done() || F <- Futures ],
     Res.
 
+cancel(#future{pid = Pid, ref = Ref} = F) ->
+    Pid ! {cancel, Ref}, %% should do monitoring here to make sure it's dead
+    F#future{pid = undefined, ref = Ref}.
 %% =============================================================================
 %%
 %% Tests
