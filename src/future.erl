@@ -5,13 +5,15 @@
 
 -export([new/0, new/1,
 
-         set/2, error/2, error/3, error/4,
+         set/2, error/2, error/3, error/4, execute/2,
 
          get/1, realize/1, ready/1,
 
+         call/1,
+
          attach/1, handle/1, done/1]).
 
--export([collect/1]).
+-export([collect/1, map/1]).
 
 -record(future, {pid, ref, result}).
 
@@ -23,8 +25,23 @@ notify(Ref, [P|T], Result) ->
     P ! {future, Ref, Result},
     notify(Ref, T, Result).
 
+do_exec(Pid, Ref, Fun) ->
+    Self = #future{pid = Pid, ref = Ref},
+    spawn_link(fun() ->
+                       try
+                           Res = Fun(),
+                           Self:set(Res)
+                       catch
+                           Class:Error ->
+                               Self:error(Class, Error, erlang:get_stacktrace())
+                       end
+               end).
+
 loop(Ref, Waiting, undefined) ->
     receive
+        {execute, Ref, Fun} ->
+            do_exec(self(), Ref, Fun),
+            loop(Ref, Waiting, undefined);
         {ready, Ref, Requester} ->
             Requester ! {future_ready, Ref, false},
             loop(Ref, Waiting, undefined);
@@ -46,19 +63,14 @@ loop(Ref, [], {_Type, _Value} = Result) ->
             loop(Ref, [], Result)
     end.
 
+execute(Fun, #future{pid = Pid, ref = Ref} = Self) ->
+    Pid ! {execute, Ref, Fun},
+    Self.
+
 new(Fun) ->
     Ref = make_ref(),
     Pid = spawn_link(fun() ->
-                             Self = #future{pid = self(), ref = Ref},
-                             spawn_link(fun() ->
-                                                try
-                                                    Res = Fun(),
-                                                    Self:set(Res)
-                                                catch
-                                                    Class:Error ->
-                                                        Self:error(Class, Error, erlang:get_stacktrace())
-                                                end
-                                        end),
+                             do_exec(self(), Ref, Fun),
                              loop(Ref, [], undefined)
                      end),
     #future{pid = Pid, ref = Ref}.
@@ -93,6 +105,9 @@ realize(#future{} = Self) ->
     Self:done(),
     Self#future{pid = undefined, ref = undefined, result = {value, Value}}.
 
+call(Self) ->
+    Self:get().
+
 get(#future{result = undefined} = Self) ->
     Self:attach(),
     Self:handle();
@@ -124,6 +139,9 @@ ready(#future{pid = Pid, ref = Ref, result = undefined} = _Self) ->
         {future_ready, Ref, Ready} ->
             Ready
     end.
+
+map(Futures) ->
+    new(fun() -> collect(Futures) end).
 
 collect(Futures) ->
     [ F:attach() || F <- Futures ],
