@@ -10,8 +10,8 @@
          get/1, realize/1, ready/1,
 
          call/1,
+         attach/1, recv/1, done/1]).
 
-         attach/1, handle/1, done/1]).
 %% collections
 -export([collect/1, map/1, chain/1, chain/2, wrap/1, wrap/2]).
 
@@ -117,15 +117,21 @@ call(Self) ->
 
 get(#future{result = undefined} = Self) ->
     Self:attach(),
-    Self:handle();
+    Self:recv();
 get(#future{result = {value, Value}}) ->
     Value.
 
-handle(#future{ref = Ref} = _Self) ->
+recv(#future{ref = Ref} = _Self) ->
     receive
-        {future, Ref, {value, Value}} ->
+        {future, Ref, Res} ->
+            handle(Res)
+    end.
+
+handle(Res) ->
+    case Res of
+        {value, Value} ->
             Value;
-        {future, Ref, {error, {Class, Error, ErrorStacktrace}}} ->
+        {error, {Class, Error, ErrorStacktrace}} ->
             {'EXIT', {new_stacktrace, CurrentStacktrace}} = (catch error(new_stacktrace)),
             erlang:raise(Class, Error, ErrorStacktrace ++ CurrentStacktrace)
     end.
@@ -177,7 +183,7 @@ chain(C1, C2) when ?is_futurable(C1), is_function(C2, 1) ->
 
 collect(Futures) ->
     [ F:attach() || F <- Futures ],
-    Res = [ F:handle() || F <- Futures ],
+    Res = [ F:recv() || F <- Futures ],
     [ F:done() || F <- Futures ],
     Res.
 
