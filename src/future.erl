@@ -13,7 +13,7 @@
 
          attach/1, handle/1, done/1]).
 
--export([collect/1, map/1]).
+-export([collect/1, map/1, chain/2]).
 
 -record(future, {pid, ref, result}).
 
@@ -142,6 +142,10 @@ ready(#future{pid = Pid, ref = Ref, result = undefined} = _Self) ->
 
 map(Futures) ->
     new(fun() -> collect(Futures) end).
+
+chain(C1, C2) when is_fun(C1), is_fun(C2) ->
+    F1 = future:new(C1),
+    future:new(fun() -> C2(F2:get()) end).
 
 collect(Futures) ->
     [ F:attach() || F <- Futures ],
