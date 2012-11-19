@@ -12,8 +12,12 @@
          call/1,
 
          attach/1, handle/1, done/1]).
+%% collections
+-export([collect/1, map/1, chain/1, chain/2, wrap/1, wrap/2]).
 
--export([collect/1, map/1, chain/2, wrap/2]).
+
+-define(is_future(F), is_record(F, future)).
+-define(is_futurable(F), (?is_future(F) orelse is_function(F, 0))).
 
 -record(future, {pid, ref, result}).
 
@@ -67,7 +71,10 @@ execute(Fun, #future{pid = Pid, ref = Ref} = Self) ->
     Pid ! {execute, Ref, Fun},
     Self.
 
-new(Fun) ->
+new(Future) when ?is_future(Future) ->
+    Future;
+
+new(Fun) when is_function(Fun, 0) ->
     Ref = make_ref(),
     Pid = spawn_link(fun() ->
                              do_exec(self(), Ref, Fun),
@@ -143,13 +150,26 @@ ready(#future{pid = Pid, ref = Ref, result = undefined} = _Self) ->
 map(Futures) ->
     new(fun() -> collect(Futures) end).
 
-wrap(Wrapper, Future) when is_function(Wrapper, 1),
-                           is_record(Future, future) ->
+wrap([Initial0|List]) when ?is_futurable(Initial0) ->
+    Initial = future:new(Initial0),
+    lists:foldl(fun wrap/2, Initial, List).
+
+wrap(Wrapper, Future0) when is_function(Wrapper, 1),
+                            ?is_futurable(Future0) ->
+    Future = future:new(Future0),
     future:new(fun() ->
-                       Wrapper(Future)
+                       R = Wrapper(Future),
+                       Future:done(),
+                       R
                end).
 
-chain(C1, C2) when is_function(C1, 0), is_function(C2, 1) ->
+chain([C|List]) when is_list(List) ->
+    Initial = future:new(C),
+    lists:foldl(fun(S, Res) ->
+                        chain(Res, S)
+                end, Initial, List).
+
+chain(C1, C2) when ?is_futurable(C1), is_function(C2, 1) ->
     F1 = future:new(C1),
     future:new(fun() ->
                        C2(F1:realize())
