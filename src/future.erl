@@ -13,7 +13,7 @@
 
          attach/1, handle/1, done/1]).
 
--export([collect/1, map/1, chain/2]).
+-export([collect/1, map/1, chain/2, wrap/2]).
 
 -record(future, {pid, ref, result}).
 
@@ -143,13 +143,23 @@ ready(#future{pid = Pid, ref = Ref, result = undefined} = _Self) ->
 map(Futures) ->
     new(fun() -> collect(Futures) end).
 
-chain(C1, C2) when is_fun(C1), is_fun(C2) ->
+wrap(Wrapper, Future) when is_function(Wrapper, 1),
+                           is_record(Future, future) ->
+    future:new(fun() ->
+                       Wrapper(Future)
+               end).
+
+chain(C1, C2) when is_function(C1, 0), is_function(C2, 1) ->
     F1 = future:new(C1),
-    future:new(fun() -> C2(F2:get()) end).
+    future:new(fun() ->
+                       C2(F1:realize())
+               end).
 
 collect(Futures) ->
     [ F:attach() || F <- Futures ],
-    [ F:handle() || F <- Futures ].
+    Res = [ F:handle() || F <- Futures ],
+    [ F:done() || F <- Futures ],
+    Res.
 
 %% =============================================================================
 %%
