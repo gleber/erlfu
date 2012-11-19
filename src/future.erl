@@ -49,6 +49,9 @@ do_exec(Pid, Ref, Fun) ->
 
 loop(Ref, Waiting, undefined) ->
     receive
+        {cancel, Ref} ->
+            %%TODO: should kill worker if running
+            ok;
         {execute, Ref, Fun} ->
             do_exec(self(), Ref, Fun),
             loop(Ref, Waiting, undefined);
@@ -61,10 +64,15 @@ loop(Ref, Waiting, undefined) ->
         {get, Ref, Requester} ->
             loop(Ref, [Requester | Waiting], undefined)
     end;
+
 loop(Ref, [], {_Type, _Value} = Result) ->
     receive
+        {cancel, Ref} ->
+            ok;
         {done, Ref} ->
             ok;
+        {execute, Ref, _} -> loop(Ref, [], Result); %% futures can be bound only once
+        {set, Ref, _} -> loop(Ref, [], Result);     %% futures can be bound only once
         {ready, Ref, Requester} ->
             Requester ! {future_ready, Ref, true},
             loop(Ref, [], Result);
