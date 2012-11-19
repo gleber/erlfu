@@ -11,6 +11,51 @@ etc.
 
 Inspired by http://monkey.org/~marius/talks/twittersystems/
 
+## Compositions ##
+
+Currently the code supports three basic compositions (names may be
+subject to change):
+1. timeout
+2. safe
+3. catcher
+
+### Timeout ###
+Timeout future wrapper can be used to limit time of execution of a future:
+```
+8> F = future:timeout(future:new(fun() -> timer:sleep(1000), io:format("Done!") end), 500).
+{future,<0.51.0>,#Ref<0.0.0.18500>,undefined}
+9> F:get().
+** exception throw: timeout
+     in function  future:'-timeout/2-fun-0-'/2 (src/future.erl, line 270)
+     in call from future:'-wrap/2-fun-0-'/2 (src/future.erl, line 220)
+     in call from future:'-do_exec/3-fun-0-'/3 (src/future.erl, line 42)
+     in call from future:handle/1 (src/future.erl, line 188)
+```
+but if timeout time is larger than 1 second it will normally perform
+expected computation:
+```
+13> F = future:timeout(future:new(fun() -> timer:sleep(1000), io:format("Done!~n"), done_returned end), 5000), F:get().
+Done!
+done_returned
+```
+
+### Safe ###
+Safe wrapper wraps future execution and catches errors and exits:
+```
+18> F = future:safe(future:new(fun() -> error(bad_future) end)), F:get().                                             
+{error,bad_future}
+```
+but it will pass through throws, since they are a code flow control
+tools.
+
+### Catcher ###
+Catcher wrapper is a stronger variant of Safe wrapper, which
+intercept all exceptions, including errors, exits and throws:
+```
+21> F = future:catcher(future:new(fun() -> throw(premature_end) end)), F:get().
+{error,throw,premature_end}
+```
+
 ## Examples ##
 
 Simple example with delayed setting of value:
