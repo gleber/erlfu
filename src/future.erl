@@ -20,7 +20,7 @@
 -export([collect/1, map/1, chain/1, chain/2, wrap/1, wrap/2]).
 
 %% wrappers
--export([timeout/1, timeout/2]).
+-export([timeout/1, timeout/2, safe/1]).
 
 -define(is_future(F), is_record(F, future)).
 -define(is_futurable(F), (?is_future(F) orelse is_function(F, 0))).
@@ -197,6 +197,18 @@ cancel(#future{pid = Pid, ref = Ref} = F) ->
     Pid ! {cancel, Ref}, %% should do monitoring here to make sure it's dead
     F#future{pid = undefined, ref = Ref}.
 
+%% =============================================================================
+%%
+%% Standard wrappers
+%%
+%% =============================================================================
+
+%% Future to add:
+%% 1. retries
+%% 2. stats
+%% 3. auth
+%% 4. logging
+
 timeout(F) ->
     timeout(F, 5000).
 timeout(F, Timeout) ->
@@ -206,6 +218,28 @@ timeout(F, Timeout) ->
                      {future, Ref, Res} ->
                          X:done(),
                          handle(Res)
+                 after Timeout ->
+                         X:cancel(),
+                         throw(timeout)
+                 end
+         end, F).
+
+safe(F) ->
+    wrap(fun(X) ->
+                 Ref = X:attach(),
+                 receive
+                     {future, Ref, Res} ->
+                         X:done(),
+                         case Res of
+                             {value, Res} ->
+                                 {ok, Res};
+                             {error, {error, Error, _}} ->
+                                 {error, Error};
+                             {error, {exit, Error, _}} ->
+                                 {error, Error};
+                             {error, {throw, Error, _}} ->
+                                 throw(Error)
+                         end
                  after Timeout ->
                          X:cancel(),
                          throw(timeout)
