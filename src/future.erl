@@ -21,7 +21,7 @@
 -export([collect/1, map/1, chain/1, chain/2, wrap/1, wrap/2]).
 
 %% wrappers
--export([timeout/1, timeout/2, safe/1, catcher/1]).
+-export([timeout/1, timeout/2, safe/1, catcher/1, retry/1, retry/2]).
 
 -define(is_future(F), is_record(F, future)).
 -define(is_futurable(F), (?is_future(F) orelse is_function(F, 0))).
@@ -224,10 +224,13 @@ handle(Res) ->
     case Res of
         {value, Value} ->
             Value;
-        {error, {Class, Error, ErrorStacktrace}} ->
-            {'EXIT', {new_stacktrace, CurrentStacktrace}} = (catch error(new_stacktrace)),
-            erlang:raise(Class, Error, ErrorStacktrace ++ CurrentStacktrace)
+        {error, {_Class, _Error, _ErrorStacktrace} = E} ->
+            reraise(E)
     end.
+
+reraise({Class, Error, ErrorStacktrace}) ->
+    {'EXIT', {new_stacktrace, CurrentStacktrace}} = (catch error(new_stacktrace)),
+    erlang:raise(Class, Error, ErrorStacktrace ++ CurrentStacktrace).
 
 attach(#future{pid = Pid, ref = Ref, result = undefined} = _Self) ->
     link(Pid), %% should be monitor
@@ -295,6 +298,35 @@ cancel(#future{pid = Pid, ref = Ref} = F) ->
 %% 2. stats
 %% 3. auth
 %% 4. logging
+
+retry(F) ->
+    retry(F, 3).
+retry(F, Count) ->
+    wrap(fun(X) ->
+                 retry_wrapper(X, 0, Count)
+         end, F).
+
+retry_wrapper(_X, E, Max, Max) ->
+    error({retry_limit_reached, Max, E}); %% use reraise to preserve stack here
+retry_wrapper(X, _E, C, Max) ->
+    retry_wrapper(X, C, Max).
+
+retry_wrapper(X, Count, Max) ->
+    Ref = X:attach(),
+    receive
+        {future, Ref, Res} ->
+            case Res of
+                {value, R} ->
+                    X:done(),
+                    R;
+                {error, {throw, Error, _}} ->
+                    throw(Error);
+                {error, {_, _, _} = E} ->
+                    Clone = X:clone(),
+                    X:done(),
+                    retry_wrapper(Clone, E, Count + 1, Max)
+            end
+    end.
 
 timeout(F) ->
     timeout(F, 5000).
@@ -445,7 +477,7 @@ safe_timeout_test() ->
     F3 = F2:realize(),
     ?assertException(throw, timeout, F3:get()).
 
-catcher_timeout_test() ->
+c4tcher_timeout_test() -> %% seems like 'catch' in the function name screwes up emacs erlang-mode indentation
     F = future:new(fun() ->
                            timer:sleep(1000),
                            done
@@ -453,3 +485,27 @@ catcher_timeout_test() ->
     F2 = future:catcher(future:timeout(F, 100)),
     F3 = F2:realize(),
     ?assertEqual({error, throw, timeout}, F3:get()).
+
+retry_success_test() ->
+    T = ets:new(retry_test, [public]),
+    ets:insert(T, {counter, 4}),
+    F = future:new(fun() ->
+                           Val = ets:update_counter(T, counter, -1),
+                           0 = Val,
+                           Val
+                   end),
+    F2 = future:retry(F, 5),
+    F3 = F2:realize(),
+    ?assertEqual(0, F3:get()).
+
+retry_fail_test() ->
+    T = ets:new(retry_test, [public]),
+    ets:insert(T, {counter, 4}),
+    F = future:new(fun() ->
+                           Val = ets:update_counter(T, counter, -1),
+                           0 = Val,
+                           Val
+                   end),
+    F2 = future:retry(F, 3),
+    F3 = F2:realize(),
+    ?assertException(error, {retry_limit_reached, 3, _}, F3:get()).

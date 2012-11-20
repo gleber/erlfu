@@ -39,6 +39,37 @@ Done!
 done_returned
 ```
 
+### Retry ###
+A wrapper which implements retrying in non-invasive way. It can be
+used to limit number of retries of establishing connection to external
+possibly-faulty resource. Hypothetical example:
+
+```erlang
+10> F = future:new(fun() -> {ok, S} = gen_tcp:connect("faulty-host.com", 80, []), S end).
+{future,<0.69.0>,#Ref<0.0.0.125>,undefined}
+11> F2 = future:retry(F).
+{future,<0.72.0>,#Ref<0.0.0.132>,undefined}
+12> F2:get().
+#Port<0.937>
+
+```
+or
+```erlang
+5> F = future:new(fun() -> {ok, S} = gen_tcp:connect("non-existing-host.com", 23, []), S end).
+{future,<0.49.0>,#Ref<0.0.0.89>,undefined}
+6> F2 = future:retry(F).
+{future,<0.54.0>,#Ref<0.0.0.98>,undefined}
+7> F2:get().
+** exception error: {retry_limit_reached,3,
+                                         {error,{badmatch,{error,nxdomain}},[{erl_eval,expr,3,[]}]}}
+     in function  future:retry_wrapper/4 (src/future.erl, line 310)
+     in call from future:'-wrap/2-fun-0-'/2 (src/future.erl, line 263)
+     in call from future:'-do_exec/3-fun-0-'/3 (src/future.erl, line 43)
+     in call from future:reraise/1 (src/future.erl, line 232)
+8> 
+
+```
+
 ### Safe ###
 Safe wrapper wraps future execution and catches errors and exits:
 ```
