@@ -306,8 +306,8 @@ retry(F, Count) ->
                  retry_wrapper(X, 0, Count)
          end, F).
 
-retry_wrapper(_X, E, Max, Max) ->
-    error({retry_limit_reached, Max, E}); %% use reraise to preserve stack here
+retry_wrapper(_X, {C,E,S}, Max, Max) ->
+    reraise({error, {retry_limit_reached, Max, {C,E}}, S});
 retry_wrapper(X, _E, C, Max) ->
     retry_wrapper(X, C, Max).
 
