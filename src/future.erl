@@ -8,6 +8,7 @@
 
          %% manipulating
          set/2, error/2, error/3, error/4, execute/2,
+         clone/1,
 
          %% getting
          get/1, realize/1, ready/1, call/1,
@@ -26,7 +27,7 @@
 -define(is_futurable(F), (?is_future(F) orelse is_function(F, 0))).
 
 -record(future, {pid, ref, result}).
--record(state, {ref, waiting = [], result, worker}).
+-record(state, {ref, waiting = [], exec, result, worker}).
 
 notify(Ref, Pid, Result) when is_pid(Pid) ->
     notify(Ref, [Pid], Result);
@@ -57,8 +58,11 @@ do_exec(Pid, Ref, Fun) ->
 %%     %% - set
 %%     ok;
 
-loop(#state{ref = Ref, waiting = Waiting, result = undefined, worker = Worker} = State) ->
+loop(#state{ref = Ref, waiting = Waiting, result = undefined, worker = Worker, exec = Exec} = State) ->
     receive
+        {get_info, Ref, Requester} ->
+            Requester ! {future_info, Ref, undefined, Exec},
+            loop(State);
         {cancel, Ref} ->
             case Worker of
                 undefined -> ok;
@@ -73,7 +77,7 @@ loop(#state{ref = Ref, waiting = Waiting, result = undefined, worker = Worker} =
             case Worker of
                 undefined ->
                     NewWorker = do_exec(self(), Ref, Fun),
-                    loop(State#state{worker = NewWorker});
+                    loop(State#state{worker = NewWorker, exec = Fun});
                 _ ->
                     loop(State)
             end;
@@ -99,15 +103,18 @@ loop(#state{ref = Ref, waiting = Waiting, result = undefined, worker = Worker} =
             loop(State#state{waiting = [Requester | Waiting]})
     end;
 
-loop(#state{ref = Ref, waiting = [], result = {Type, _Value} = Result, worker = undefined} = State) when Type /= lazy ->
+loop(#state{ref = Ref, waiting = [], result = {Type, _Value} = Result, worker = undefined, exec = Exec} = State) when Type /= lazy ->
     receive
+        {get_info, Ref, Requester} ->
+            Requester ! {future_info, Ref, Result, Exec},
+            loop(State);
         {cancel, Ref} ->
             ok;
         {done, Ref} ->
             ok;
-        {execute, Ref, _} -> loop(State);  %% futures can be bound only once
-        {computed, Ref, _} -> exit(bug); %% futures can be bound only once
-        {set, Ref, _} -> loop(State);      %% futures can be bound only once
+        {execute, Ref, _} -> loop(State); %% futures can be bound only once
+        {computed, Ref, _} -> exit(bug);  %% futures can be bound only once
+        {set, Ref, _} -> loop(State);     %% futures can be bound only once
         {ready, Ref, Requester} ->
             Requester ! {future_ready, Ref, true},
             loop(State);
@@ -147,7 +154,7 @@ new(Fun) when is_function(Fun, 0) ->
     Ref = make_ref(),
     Pid = spawn_link(fun() ->
                              W = do_exec(self(), Ref, Fun),
-                             loop(#state{ref = Ref, worker = W})
+                             loop(#state{ref = Ref, worker = W, exec = Fun})
                      end),
     #future{pid = Pid, ref = Ref}.
 
@@ -157,6 +164,19 @@ new() ->
                              loop(#state{ref = Ref})
                      end),
     #future{pid = Pid, ref = Ref}.
+
+clone(#future{pid = Pid, ref = Ref}) -> %% does not clone multi-level futures!!!
+    Pid ! {get_info, Ref, self()},
+    receive
+        {future_info, Ref, undefined, undefined} ->
+            future:new();
+        {future_info, Ref, _, Fun} when is_function(Fun) ->
+            future:new(Fun);
+        {future_info, Ref, {value, Result}, undefined} ->
+            future:static(Result);
+        {future_info, Ref, {error, {Class, Error, Stack}}, undefined} ->
+            future:static_error(Class, Error, Stack)
+    end.
 
 error(Error, #future{} = Self) ->
     Self:error(error, Error).
@@ -362,6 +382,23 @@ realize_test() ->
     F:set(42),
     F2 = F:realize(),
     42 == F2:get().
+
+clone_val_test() ->
+    F = future:new(),
+    F:set(42),
+    F2 = F:clone(),
+    F:done(),
+    F3 = F2:realize(),
+    42 == F3:get().
+
+clone_fun_test() ->
+    F = future:new(fun() ->
+                           43
+                   end),
+    F2 = F:clone(),
+    F:done(),
+    F3 = F2:realize(),
+    43 == F3:get().
 
 cancel_test() ->
     Self = self(),
