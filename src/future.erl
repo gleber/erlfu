@@ -4,7 +4,7 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -export([%% creating
-         new/0, new/1,
+         new/0, new/1, static/1, static_error/1, static_error/2, static_error/3,
 
          %% manipulating
          set/2, error/2, error/3, error/4, execute/2,
@@ -119,6 +119,26 @@ loop(#state{ref = Ref, waiting = [], result = {Type, _Value} = Result, worker = 
 execute(Fun, #future{pid = Pid, ref = Ref} = Self) ->
     Pid ! {execute, Ref, Fun},
     Self.
+
+static(Term) ->
+    Ref = make_ref(),
+    Pid = spawn_link(fun() ->
+                             loop(#state{ref = Ref, result = {value, Term}})
+                     end),
+    #future{pid = Pid, ref = Ref}.
+
+static_error(Error) ->
+    static_error(error, Error).
+
+static_error(Class, Error) ->
+    static_error(Class, Error, []).
+
+static_error(Class, Error, Stack) ->
+    Ref = make_ref(),
+    Pid = spawn_link(fun() ->
+                             loop(#state{ref = Ref, result = {error, {Class, Error, Stack}}})
+                     end),
+    #future{pid = Pid, ref = Ref}.
 
 new(Future) when ?is_future(Future) ->
     Future;
