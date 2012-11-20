@@ -74,6 +74,9 @@ or
      in call from future:reraise/1 (src/future.erl, line 232)
 ```
 
+Note: retry wrapper does work only on shallow futures, since cloning
+is still shallow.
+
 ### Safe ###
 Safe wrapper wraps future execution and catches errors and exits:
 ```erlang
@@ -121,6 +124,23 @@ Values can be bound to future after it is created:
 9> F:get().
 42
 ```
+
+Futures can be cloned to rerun them if need be:
+```erlang
+65> F = future:new(fun() -> timer:sleep(5000), io:format("Run!~n"), crypto:rand_uniform(0, 100) end).
+{future,{gcproc,<0.1546.0>,{resource,160354072,<<>>}},
+        #Ref<0.0.0.2024>,undefined}
+66> F:get().
+Run!
+16
+67> F2 = F:clone().
+{future,{gcproc,<0.1550.0>,{resource,160354272,<<>>}},
+        #Ref<0.0.0.2033>,undefined}
+68> F2:get().
+Run!
+75
+```
+Please note that currently futures are cloned shallowly.
 
 Multiple futures' values can be collected. If one future fails
 everything will fail:
