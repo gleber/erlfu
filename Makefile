@@ -4,7 +4,7 @@ all: $(REBAR)
 	$(REBAR) get-deps compile
 
 tests:  $(REBAR)
-	$(REBAR) eunit skip_deps=true suite=dstree
+	$(REBAR) eunit skip_deps=true
 
 sh: all
 	erl -pa ebin/ -pa .eunit/ -run reloader -eval 'shell_default:m(future).'

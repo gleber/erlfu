@@ -26,7 +26,7 @@
 -define(is_future(F), is_record(F, future)).
 -define(is_futurable(F), (?is_future(F) orelse is_function(F, 0))).
 
--record(future, {pid, ref, result}).
+-record(future, {proc, ref, result}).
 -record(state, {ref, waiting = [], exec, result, worker}).
 
 notify(Ref, Pid, Result) when is_pid(Pid) ->
@@ -37,7 +37,8 @@ notify(Ref, [P|T], Result) ->
     P ! {future, Ref, Result},
     notify(Ref, T, Result).
 
-do_exec(Pid, Ref, Fun) ->
+do_exec(Ref, Fun) ->
+    Pid = self(),
     spawn_monitor(fun() ->
                           try
                               Res = Fun(),
@@ -76,7 +77,7 @@ loop(#state{ref = Ref, waiting = Waiting, result = undefined, worker = Worker, e
         {execute, Ref, Fun} ->
             case Worker of
                 undefined ->
-                    NewWorker = do_exec(self(), Ref, Fun),
+                    NewWorker = do_exec(Ref, Fun),
                     loop(State#state{worker = NewWorker, exec = Fun});
                 _ ->
                     loop(State)
@@ -123,16 +124,16 @@ loop(#state{ref = Ref, waiting = [], result = {Type, _Value} = Result, worker = 
             loop(State)
     end.
 
-execute(Fun, #future{pid = Pid, ref = Ref} = Self) ->
-    Pid ! {execute, Ref, Fun},
+execute(Fun, #future{proc = Proc, ref = Ref} = Self) ->
+    Proc:send({execute, Ref, Fun}),
     Self.
 
 static(Term) ->
     Ref = make_ref(),
-    Pid = spawn_link(fun() ->
-                             loop(#state{ref = Ref, result = {value, Term}})
-                     end),
-    #future{pid = Pid, ref = Ref}.
+    Proc = gcproc:spawn(fun() ->
+                                loop(#state{ref = Ref, result = {value, Term}})
+                        end),
+    #future{proc = Proc, ref = Ref}.
 
 static_error(Error) ->
     static_error(error, Error).
@@ -142,31 +143,31 @@ static_error(Class, Error) ->
 
 static_error(Class, Error, Stack) ->
     Ref = make_ref(),
-    Pid = spawn_link(fun() ->
-                             loop(#state{ref = Ref, result = {error, {Class, Error, Stack}}})
-                     end),
-    #future{pid = Pid, ref = Ref}.
+    Proc = gcproc:spawn(fun() ->
+                               loop(#state{ref = Ref, result = {error, {Class, Error, Stack}}})
+                       end),
+    #future{proc = Proc, ref = Ref}.
 
 new(Future) when ?is_future(Future) ->
     Future;
 
 new(Fun) when is_function(Fun, 0) ->
     Ref = make_ref(),
-    Pid = spawn_link(fun() ->
-                             W = do_exec(self(), Ref, Fun),
-                             loop(#state{ref = Ref, worker = W, exec = Fun})
-                     end),
-    #future{pid = Pid, ref = Ref}.
+    Proc = gcproc:spawn(fun() ->
+                               W = do_exec(Ref, Fun),
+                               loop(#state{ref = Ref, worker = W, exec = Fun})
+                       end),
+    #future{proc = Proc, ref = Ref}.
 
 new() ->
     Ref = make_ref(),
-    Pid = spawn_link(fun() ->
-                             loop(#state{ref = Ref})
-                     end),
-    #future{pid = Pid, ref = Ref}.
+    Proc = gcproc:spawn(fun() ->
+                               loop(#state{ref = Ref})
+                       end),
+    #future{proc = Proc, ref = Ref}.
 
-clone(#future{pid = Pid, ref = Ref}) -> %% does not clone multi-level futures!!!
-    Pid ! {get_info, Ref, self()},
+clone(#future{proc = Proc, ref = Ref}) -> %% does not clone multi-level futures!!!
+    Proc:send({get_info, Ref, self()}),
     receive
         {future_info, Ref, undefined, undefined} ->
             future:new();
@@ -183,17 +184,17 @@ error(Error, #future{} = Self) ->
 error(Class, Error, #future{} = Self) ->
     Self:error(Class, Error, []).
 
-error(Class, Error, Stacktrace, #future{pid = Pid, ref = Ref} = Self) ->
+error(Class, Error, Stacktrace, #future{proc = Proc, ref = Ref} = Self) ->
     Val = {error, {Class, Error, Stacktrace}},
-    Pid ! {set, Ref, Val},
+    Proc:send({set, Ref, Val}),
     Self#future{result = Val}.
 
-set(Value, #future{pid = Pid, ref = Ref} = Self) ->
-    Pid ! {set, Ref, {value, Value}},
+set(Value, #future{proc = Proc, ref = Ref} = Self) ->
+    Proc:send({set, Ref, {value, Value}}),
     Self#future{result = {value, Value}}.
 
-done(#future{pid = Pid, ref = Ref} = _Self) ->
-    Pid ! {done, Ref},
+done(#future{proc = Proc, ref = Ref} = _Self) ->
+    Proc:send({done, Ref}),
     ok.
 
 realize(#future{} = Self) ->
@@ -203,7 +204,7 @@ realize(#future{} = Self) ->
                   R
           end,
     Self:done(),
-    Self#future{pid = undefined, ref = undefined, result = Res}.
+    Self#future{proc = undefined, ref = undefined, result = Res}.
 
 call(Self) ->
     Self:get().
@@ -232,9 +233,9 @@ reraise({Class, Error, ErrorStacktrace}) ->
     {'EXIT', {new_stacktrace, CurrentStacktrace}} = (catch error(new_stacktrace)),
     erlang:raise(Class, Error, ErrorStacktrace ++ CurrentStacktrace).
 
-attach(#future{pid = Pid, ref = Ref, result = undefined} = _Self) ->
-    link(Pid), %% should be monitor
-    Pid ! {get, Ref, self()},
+attach(#future{proc = Proc, ref = Ref, result = undefined} = _Self) ->
+    Proc:link(), %% should be monitor
+    Proc:send({get, Ref, self()}),
     Ref;
 attach(#future{ref = Ref, result = {_Type, _Value} = Result} = _Self) ->
     self() ! {future, Ref, Result},
@@ -242,8 +243,8 @@ attach(#future{ref = Ref, result = {_Type, _Value} = Result} = _Self) ->
 
 ready(#future{result = {_Type, _Value}}) ->
     true;
-ready(#future{pid = Pid, ref = Ref, result = undefined} = _Self) ->
-    Pid ! {ready, Ref, self()},
+ready(#future{proc = Proc, ref = Ref, result = undefined} = _Self) ->
+    Proc:send({ready, Ref, self()}),
     receive
         {future_ready, Ref, Ready} ->
             Ready
@@ -283,9 +284,9 @@ collect(Futures) ->
     [ F:done() || F <- Futures ],
     Res.
 
-cancel(#future{pid = Pid, ref = Ref} = F) ->
-    Pid ! {cancel, Ref}, %% should do monitoring here to make sure it's dead
-    F#future{pid = undefined, ref = Ref}.
+cancel(#future{proc = Proc, ref = Ref} = F) ->
+    Proc:send({cancel, Ref}), %% should do monitoring here to make sure it's dead
+    F#future{proc = undefined, ref = Ref}.
 
 %% =============================================================================
 %%
@@ -403,6 +404,8 @@ basic_test() ->
                    end}.
 
 get_test() ->
+    ok = application:start(gcproc),
+    ok = application:start(erlfu),
     F = future:new(),
     F:set(42),
     Val = F:get(),
