@@ -42,7 +42,7 @@ done_returned
 ### Retry ###
 A wrapper which implements retrying in non-invasive way. It can be
 used to limit number of retries of establishing connection to external
-possibly-faulty resource. Hypothetical example:
+possibly-faulty resource. Example:
 
 ```erlang
 10> F = future:new(fun() -> {ok, S} = gen_tcp:connect("faulty-host.com", 80, []), S end).
@@ -55,19 +55,17 @@ possibly-faulty resource. Hypothetical example:
 ```
 or
 ```erlang
-5> F = future:new(fun() -> {ok, S} = gen_tcp:connect("non-existing-host.com", 23, []), S end).
-{future,<0.49.0>,#Ref<0.0.0.89>,undefined}
-6> F2 = future:retry(F).
-{future,<0.54.0>,#Ref<0.0.0.98>,undefined}
-7> F2:get().
-** exception error: {retry_limit_reached,3,
-                                         {error,{badmatch,{error,nxdomain}},[{erl_eval,expr,3,[]}]}}
-     in function  future:retry_wrapper/4 (src/future.erl, line 310)
+1> F = future:new(fun() -> {ok, S} = gen_tcp:connect("non-existing-host.com", 23, []), S end).
+{future,<0.34.0>,#Ref<0.0.0.67>,undefined}
+2> F2 = future:retry(F).
+{future,<0.39.0>,#Ref<0.0.0.76>,undefined}
+3> F2:get().
+** exception error: {retry_limit_reached,3,{error,{badmatch,{error,nxdomain}}}}
+     in function  erl_eval:expr/3
+     in call from future:reraise/1 (src/future.erl, line 232)
      in call from future:'-wrap/2-fun-0-'/2 (src/future.erl, line 263)
      in call from future:'-do_exec/3-fun-0-'/3 (src/future.erl, line 43)
      in call from future:reraise/1 (src/future.erl, line 232)
-8> 
-
 ```
 
 ### Safe ###
