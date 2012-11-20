@@ -21,7 +21,7 @@ subject to change):
 
 ### Timeout ###
 Timeout future wrapper can be used to limit time of execution of a future:
-```
+```erlang
 8> F = future:timeout(future:new(fun() -> timer:sleep(1000), io:format("Done!") end), 500).
 {future,<0.51.0>,#Ref<0.0.0.18500>,undefined}
 9> F:get().
@@ -33,7 +33,7 @@ Timeout future wrapper can be used to limit time of execution of a future:
 ```
 but if timeout time is larger than 1 second it will normally perform
 expected computation:
-```
+```erlang
 13> F = future:timeout(future:new(fun() -> timer:sleep(1000), io:format("Done!~n"), done_returned end), 5000), F:get().
 Done!
 done_returned
@@ -72,7 +72,7 @@ or
 
 ### Safe ###
 Safe wrapper wraps future execution and catches errors and exits:
-```
+```erlang
 18> F = future:safe(future:new(fun() -> error(bad_future) end)), F:get().                                             
 {error,bad_future}
 ```
@@ -82,7 +82,7 @@ tools.
 ### Catcher ###
 Catcher wrapper is a stronger variant of Safe wrapper, which
 intercept all exceptions, including errors, exits and throws:
-```
+```erlang
 21> F = future:catcher(future:new(fun() -> throw(premature_end) end)), F:get().
 {error,throw,premature_end}
 ```
@@ -90,7 +90,7 @@ intercept all exceptions, including errors, exits and throws:
 ## Examples ##
 
 Simple example with delayed setting of value:
-```
+```erlang
 1> F = future:new(fun() -> timer:sleep(10000), 10 end).
 {future,<0.36.0>,#Ref<0.0.0.1736>,undefined}
 2> F:get(). %% it hangs for 10 seconds
@@ -98,7 +98,7 @@ Simple example with delayed setting of value:
 ```
 
 Exceptions are propagated with stacktrace preserved:
-```
+```erlang
 4> F = future:new(fun() -> a = b end).
 {future,<0.41.0>,#Ref<0.0.0.21416>,undefined}
 5> F:get().                                               
@@ -109,7 +109,7 @@ Exceptions are propagated with stacktrace preserved:
 ```
 
 Values can be bound to future after it is created:
-```
+```erlang
 7> F = future:new().                                      
 {future,<0.47.0>,#Ref<0.0.0.27235>,undefined}
 8> spawn(fun() -> timer:sleep(10000), F:set(42) end).
@@ -120,7 +120,7 @@ Values can be bound to future after it is created:
 
 Multiple futures' values can be collected. If one future fails
 everything will fail:
-```
+```erlang
 5> F1 = future:new(fun() -> timer:sleep(3000), 10 end).
 {future,<0.50.0>,#Ref<0.0.0.76697>,undefined}
 6> F2 = future:new(fun() -> timer:sleep(3000), 5 end). 
