@@ -12,7 +12,6 @@
 
          %% getting
          get/1, realize/1, ready/1, call/1,
-         attach/1, recv/1,
 
          %% finishing
          done/1, cancel/1]).
