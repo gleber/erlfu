@@ -26,7 +26,7 @@
 -define(is_futurable(F), (?is_future(F) orelse is_function(F, 0))).
 
 -record(future, {proc, ref, result}).
--record(state, {ref, waiting = [], exec, result, worker}).
+-record(state, {ref, waiting = [], exec, result, worker, opts = []}).
 
 notify(Ref, Pid, Result) when is_pid(Pid) ->
     notify(Ref, [Pid], Result);
@@ -48,7 +48,11 @@ do_exec(Ref, Fun) ->
                           end
                   end).
 
-%% loop(#state{result = {lazy, Fun}} = State) ->
+loop(State) ->
+    %% erlang:process_flag(trap_exit, true),
+    loop0(State).
+
+%% loop0(#state{result = {lazy, Fun}} = State) ->
 %%     %% implement:
 %%     %% - cancel
 %%     %% - get
@@ -58,11 +62,11 @@ do_exec(Ref, Fun) ->
 %%     %% - set
 %%     ok;
 
-loop(#state{ref = Ref, waiting = Waiting, result = undefined, worker = Worker, exec = Exec} = State) ->
+loop0(#state{ref = Ref, waiting = Waiting, result = undefined, worker = Worker, exec = Exec, opts = Opts} = State) ->
     receive
         {get_info, Ref, Requester} ->
-            Requester ! {future_info, Ref, undefined, Exec},
-            loop(State);
+            Requester ! {future_info, Ref, undefined, Exec, proplists:get_value(wraps, Opts)},
+            loop0(State);
         {cancel, Ref} ->
             case Worker of
                 undefined -> ok;
@@ -77,9 +81,9 @@ loop(#state{ref = Ref, waiting = Waiting, result = undefined, worker = Worker, e
             case Worker of
                 undefined ->
                     NewWorker = do_exec(Ref, Fun),
-                    loop(State#state{worker = NewWorker, exec = Fun});
+                    loop0(State#state{worker = NewWorker, exec = Fun});
                 _ ->
-                    loop(State)
+                    loop0(State)
             end;
         {computed, Ref, Result} ->
             notify(Ref, Waiting, Result),
@@ -87,40 +91,40 @@ loop(#state{ref = Ref, waiting = Waiting, result = undefined, worker = Worker, e
             receive
                 {'DOWN', MonRef, process, Pid, _} -> ok
             end,
-            loop(State#state{waiting = [], result = Result, worker = undefined});
+            loop0(State#state{waiting = [], result = Result, worker = undefined});
         {set, Ref, Result} ->
             case Worker of
                 undefined ->
                     notify(Ref, Waiting, Result),
-                    loop(State#state{waiting = [], result = Result});
+                    loop0(State#state{waiting = [], result = Result});
                 _ ->
-                    loop(State)
+                    loop0(State)
             end;
         {ready, Ref, Requester} ->
             Requester ! {future_ready, Ref, false},
-            loop(State);
+            loop0(State);
         {get, Ref, Requester} ->
-            loop(State#state{waiting = [Requester | Waiting]})
+            loop0(State#state{waiting = [Requester | Waiting]})
     end;
 
-loop(#state{ref = Ref, waiting = [], result = {Type, _Value} = Result, worker = undefined, exec = Exec} = State) when Type /= lazy ->
+loop0(#state{ref = Ref, waiting = [], result = {Type, _Value} = Result, worker = undefined, exec = Exec, opts = Opts} = State) when Type /= lazy ->
     receive
         {get_info, Ref, Requester} ->
-            Requester ! {future_info, Ref, Result, Exec},
-            loop(State);
+            Requester ! {future_info, Ref, Result, Exec, proplists:get_value(wraps, Opts)},
+            loop0(State);
         {cancel, Ref} ->
             ok;
         {done, Ref} ->
             ok;
-        {execute, Ref, _} -> loop(State); %% futures can be bound only once
+        {execute, Ref, _} -> loop0(State); %% futures can be bound only once
         {computed, Ref, _} -> exit(bug);  %% futures can be bound only once
-        {set, Ref, _} -> loop(State);     %% futures can be bound only once
+        {set, Ref, _} -> loop0(State);     %% futures can be bound only once
         {ready, Ref, Requester} ->
             Requester ! {future_ready, Ref, true},
-            loop(State);
+            loop0(State);
         {get, Ref, Requester} ->
             notify(Ref, Requester, Result),
-            loop(State)
+            loop0(State)
     end.
 
 execute(Fun, #future{proc = Proc, ref = Ref} = Self) ->
@@ -143,38 +147,44 @@ static_error(Class, Error) ->
 static_error(Class, Error, Stack) ->
     Ref = make_ref(),
     Proc = gcproc:spawn(fun() ->
-                               loop(#state{ref = Ref, result = {error, {Class, Error, Stack}}})
-                       end),
+                                loop(#state{ref = Ref, result = {error, {Class, Error, Stack}}})
+                        end),
     #future{proc = Proc, ref = Ref}.
 
-new(Future) when ?is_future(Future) ->
+new(Future) ->
+    new(Future, []).
+
+new(Future, _Opts) when ?is_future(Future) ->
     Future;
 
-new(Fun) when is_function(Fun, 0) ->
+new(Fun, Opts) when is_function(Fun, 0) ->
     Ref = make_ref(),
     Proc = gcproc:spawn(fun() ->
-                               W = do_exec(Ref, Fun),
-                               loop(#state{ref = Ref, worker = W, exec = Fun})
-                       end),
+                                W = do_exec(Ref, Fun),
+                                loop(#state{ref = Ref, worker = W, exec = Fun, opts = Opts})
+                        end),
     #future{proc = Proc, ref = Ref}.
 
 new() ->
     Ref = make_ref(),
     Proc = gcproc:spawn(fun() ->
-                               loop(#state{ref = Ref})
-                       end),
+                                loop(#state{ref = Ref})
+                        end),
     #future{proc = Proc, ref = Ref}.
 
 clone(#future{proc = Proc, ref = Ref}) -> %% does not clone multi-level futures!!!
     Proc:send({get_info, Ref, self()}),
     receive
-        {future_info, Ref, undefined, undefined} ->
+        {future_info, Ref, undefined, undefined, undefined} ->
             future:new();
-        {future_info, Ref, _, Fun} when is_function(Fun) ->
+        {future_info, Ref, _, Fun, undefined} when is_function(Fun) ->
             future:new(Fun);
-        {future_info, Ref, {value, Result}, undefined} ->
+        {future_info, Ref, _, Fun, Wrapped} when is_function(Fun), ?is_future(Wrapped) ->
+            Wrapped2 = Wrapped:clone(),
+            future:wrap(Fun, Wrapped2);
+        {future_info, Ref, {value, Result}, undefined, undefined} ->
             future:static(Result);
-        {future_info, Ref, {error, {Class, Error, Stack}}, undefined} ->
+        {future_info, Ref, {error, {Class, Error, Stack}}, undefined, undefined} ->
             future:static_error(Class, Error, Stack)
     end.
 
@@ -259,11 +269,12 @@ wrap([Initial0|List]) when ?is_futurable(Initial0) ->
 wrap(Wrapper, Future0) when is_function(Wrapper, 1),
                             ?is_futurable(Future0) ->
     Future = future:new(Future0),
-    future:new(fun() ->
-                       R = Wrapper(Future),
-                       Future:done(),
-                       R
-               end).
+    new(fun() ->
+                R = Wrapper(Future),
+                Future:done(),
+                R
+        end,
+        [{wraps, Future}]).
 
 chain([C|List]) when is_list(List) ->
     Initial = future:new(C),
@@ -273,9 +284,10 @@ chain([C|List]) when is_list(List) ->
 
 chain(C1, C2) when ?is_futurable(C1), is_function(C2, 1) ->
     F1 = future:new(C1),
-    future:new(fun() ->
-                       C2(F1:realize())
-               end).
+    new(fun() ->
+                C2(F1:realize())
+        end,
+        [{wraps, F1}]).
 
 collect(Futures) ->
     [ F:attach() || F <- Futures ],
@@ -432,6 +444,39 @@ clone_fun_test() ->
     F:done(),
     F3 = F2:realize(),
     43 == F3:get().
+
+deep_clone_fun_test() ->
+    Self = self(),
+    F = future:new(fun() ->
+                           Self ! 1
+                   end),
+    F:get(),
+    receive
+        1 -> ok
+    after 200 ->
+            error(timeout)
+    end,
+    F2 = F:clone(),
+    F3 = F2:realize(),
+    receive
+        1 -> ok
+    after 200 ->
+            error(timeout)
+    end,
+    43 == F3:get().
+
+deep_clone_retry_test() ->
+    Self = self(),
+    F = future:new(fun() ->
+                           Self ! 2,
+                           error(test)
+                   end),
+    F2 = future:retry(F, 3),
+    F3 = F2:realize(),
+    receive 2 -> ok after 200 -> error(timeout) end,
+    receive 2 -> ok after 200 -> error(timeout) end,
+    receive 2 -> ok after 200 -> error(timeout) end,
+    ?assertException(error, {retry_limit_reached, 3, _}, F3:get()).
 
 cancel_test() ->
     Self = self(),
