@@ -207,28 +207,21 @@ done(#future{proc = Proc, ref = Ref} = _Self) ->
     ok.
 
 realize(#future{} = Self) ->
-    Ref = Self:attach(),
-    Res = receive
-              {future, Ref, R} ->
-                  R
-          end,
+    Res = do_get(Self),
     Self:done(),
     Self#future{proc = undefined, ref = undefined, result = Res}.
 
 call(Self) ->
     Self:get().
 
-get(#future{result = undefined} = Self) ->
-    Self:attach(),
-    Self:recv();
-get(#future{result = Res}) ->
-    handle(Res).
+get(#future{} = Self) ->
+    handle(do_get(Self)).
 
-recv(#future{ref = Ref} = _Self) ->
-    receive
-        {future, Ref, Res} ->
-            handle(Res)
-    end.
+do_get(#future{result = undefined} = Self) ->
+    Att = attach(Self),
+    do_detach(Att, Self);
+do_get(#future{result = Res}) ->
+    Res.
 
 handle(Res) ->
     case Res of
@@ -242,13 +235,38 @@ reraise({Class, Error, ErrorStacktrace}) ->
     {'EXIT', {new_stacktrace, CurrentStacktrace}} = (catch error(new_stacktrace)),
     erlang:raise(Class, Error, ErrorStacktrace ++ CurrentStacktrace).
 
+reraise_down_reason(Reason) ->
+    case Reason of
+        {{nocatch,Error},Stack} ->
+            reraise({throw, Error, Stack});
+        {Error,Stack} ->
+            reraise({error, Error, Stack});
+        Error ->
+            reraise({exit, Error, []})
+    end.
+
 attach(#future{proc = Proc, ref = Ref, result = undefined} = _Self) ->
-    Proc:link(), %% should be monitor
+    Mon = Proc:monitor(),
     Proc:send({get, Ref, self()}),
-    Ref;
+    {Ref, Mon};
 attach(#future{ref = Ref, result = {_Type, _Value} = Result} = _Self) ->
     self() ! {future, Ref, Result},
-    Ref.
+    {Ref, undefined}.
+
+%% detach(Att, Self) ->
+%%     handle(future:do_detach(Att, Self)).
+
+do_detach({Ref, Mon}, #future{ref = Ref, proc = Proc} = _Self) ->
+    receive
+        {future, Ref, Res} ->
+            case Mon of
+                undefined -> ok;
+                _         -> Proc:demonitor(Mon)
+            end,
+            Res;
+        {'DOWN', Mon, process, _Pid, Reason} ->
+            reraise_down_reason(Reason)
+    end.
 
 ready(#future{result = {_Type, _Value}}) ->
     true;
@@ -290,10 +308,10 @@ chain(C1, C2) when ?is_futurable(C1), is_function(C2, 1) ->
         [{wraps, F1}]).
 
 collect(Futures) ->
-    [ F:attach() || F <- Futures ],
-    Res = [ F:recv() || F <- Futures ],
+    L = [ {F, attach(F)} || F <- Futures ],
+    Res = [ do_detach(Attach, F) || {F, Attach} <- L ],
     [ F:done() || F <- Futures ],
-    Res.
+    [ handle(R) || R <- Res ].
 
 cancel(#future{proc = Proc, ref = Ref} = F) ->
     Proc:send({cancel, Ref}), %% should do monitoring here to make sure it's dead
@@ -324,31 +342,35 @@ retry_wrapper(X, _E, C, Max) ->
     retry_wrapper(X, C, Max).
 
 retry_wrapper(X, Count, Max) ->
-    Ref = X:attach(),
-    receive
-        {future, Ref, Res} ->
-            case Res of
-                {value, R} ->
-                    X:done(),
-                    R;
-                {error, {throw, Error, _}} ->
-                    throw(Error);
-                {error, {_, _, _} = E} ->
-                    Clone = X:clone(),
-                    X:done(),
-                    retry_wrapper(Clone, E, Count + 1, Max)
-            end
+    Res = do_get(X), %% handle dead future
+    case Res of
+        {value, R} ->
+            X:done(),
+            R;
+        {error, {throw, Error, _}} ->
+            throw(Error);
+        {error, {_, _, _} = E} ->
+            Clone = X:clone(),
+            X:done(),
+            retry_wrapper(Clone, E, Count + 1, Max)
     end.
 
 timeout(F) ->
     timeout(F, 5000).
 timeout(F, Timeout) ->
     wrap(fun(X) ->
-                 Ref = X:attach(),
+                 #future{proc = Proc} = X,
+                 {Ref, Mon} = attach(X), %% manual do_detach is done here
                  receive
                      {future, Ref, Res} ->
+                         case Mon of
+                             undefined -> ok;
+                             _         -> Proc:demonitor(Mon)
+                         end,
                          X:done(),
-                         handle(Res)
+                         handle(Res);
+                     {'DOWN', Mon, process, _Pid, Reason} ->
+                         reraise_down_reason(Reason)
                  after Timeout ->
                          X:cancel(),
                          throw(timeout)
@@ -357,35 +379,29 @@ timeout(F, Timeout) ->
 
 safe(F) ->
     wrap(fun(X) ->
-                 Ref = X:attach(),
-                 receive
-                     {future, Ref, Res} ->
-                         X:done(),
-                         case Res of
-                             {value, R} ->
-                                 {ok, R};
-                             {error, {error, Error, _}} ->
-                                 {error, Error};
-                             {error, {exit, Error, _}} ->
-                                 {error, Error};
-                             {error, {throw, Error, _}} ->
-                                 throw(Error)
-                         end
+                 Res = do_get(X),
+                 X:done(),
+                 case Res of
+                     {value, R} ->
+                         {ok, R};
+                     {error, {error, Error, _}} ->
+                         {error, Error};
+                     {error, {exit, Error, _}} ->
+                         {error, Error};
+                     {error, {throw, Error, _}} ->
+                         throw(Error)
                  end
          end, F).
 
 catcher(F) ->
         wrap(fun(X) ->
-                     Ref = X:attach(),
-                     receive
-                         {future, Ref, Res} ->
-                             X:done(),
-                             case Res of
-                                 {value, R} ->
-                                     {ok, R};
-                                 {error, {Class, Error, _}} ->
-                                     {error, Class, Error}
-                             end
+                     Res = do_get(X),
+                     X:done(),
+                     case Res of
+                         {value, R} ->
+                             {ok, R};
+                         {error, {Class, Error, _}} ->
+                             {error, Class, Error}
                      end
              end, F).
 
