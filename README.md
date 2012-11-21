@@ -6,8 +6,10 @@ processes to represent a future.
 Futures are actually [garbage collected processes](http://github.com/gleber/gcproc)
 which are based on Tony Rogvall's [resource](http://github.com/tonyrog/resource) project.
 
-Note: requires SMP support
-Note2: garbage collection works only locally
+Notes on limitations:
+
+1. requires SMP support
+2. garbage collection works only locally
 
 ## Goals ##
 
