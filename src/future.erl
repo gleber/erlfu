@@ -404,8 +404,7 @@ basic_test() ->
                    end}.
 
 get_test() ->
-    ok = application:start(gcproc),
-    ok = application:start(erlfu),
+    erlfu:start(),
     F = future:new(),
     F:set(42),
     Val = F:get(),

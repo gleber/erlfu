@@ -7,7 +7,7 @@ tests:  $(REBAR)
 	$(REBAR) eunit skip_deps=true
 
 sh: all
-	erl -pa ebin/ -pa deps/*/ebin -eval 'shell_default:m(future).'
+	erl -name f$$$$ -pa ebin/ -pa deps/*/ebin -eval 'erlfu:start(), shell_default:m(future).'
 
 test: tests
 
