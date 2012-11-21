@@ -12,6 +12,7 @@
 
          %% getting
          get/1, realize/1, ready/1, call/1,
+         as_fun/1,
 
          %% finishing
          done/1, cancel/1]).
@@ -216,6 +217,9 @@ call(Self) ->
 
 get(#future{} = Self) ->
     handle(do_get(Self)).
+
+as_fun(Self) ->
+    fun() -> Self:get() end.
 
 do_get(#future{result = undefined} = Self) ->
     Att = attach(Self),
