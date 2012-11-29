@@ -19,13 +19,21 @@ etc.
 
 Inspired by http://monkey.org/~marius/talks/twittersystems/
 
+## Roadmap ##
+
+- add wait_for/1 to wait for death of a process
+- make set/2 and exec/2 transparent in regard to wrappers
+- add on_success/1 and on_failure/1
+- add wrappers that pass params to other futures for sharding and authentication
+
 ## Compositions ##
 
-Currently the code supports three basic compositions (names may be
-subject to change):
+Currently the code supports three basic compositions:
+
 1. timeout
-2. safe
-3. catcher
+2. retry
+3. safe
+4. catcher
 
 ### Timeout ###
 Timeout future wrapper can be used to limit time of execution of a future:
