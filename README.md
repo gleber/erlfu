@@ -25,6 +25,10 @@ Inspired by http://monkey.org/~marius/talks/twittersystems/
 - make set/2 and exec/2 transparent in regard to wrappers
 - add on_success/1 and on_failure/1
 - add wrappers that pass params to other futures for sharding and authentication
+- add complex composition to
+  - wait for all
+  - wait for one
+  - wait for specific, but gather other values
 
 ## Compositions ##
 
