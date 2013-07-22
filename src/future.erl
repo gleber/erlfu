@@ -122,13 +122,13 @@ new_static_error(Class, Error, Stack) ->
                         end),
     #future{proc = Proc, ref = Ref}.
 
-execute(Fun, #future{proc = Proc, ref = Ref} = Self) when is_function(Fun, 0) ->
-    Proc:send({execute, Ref, Fun}), %% should crash calling process if future is bound
+execute(Fun, #future{ref = Ref} = Self) when is_function(Fun, 0) ->
+    do_call(Self, {execute, Ref, self(), Fun}, executing),
     Self.
 
-clone(#future{proc = Proc, ref = Ref}) -> %% does not clone multi-level futures!!!
-    Proc:send({get_info, Ref, self()}),
-    receive
+clone(#future{ref = Ref} = Self) -> %% does not clone multi-level futures!!!
+    Info = do_call(Self, {get_info, Ref, self()}, future_info),
+    case Info of
         %% future_info, Ref, Result, Executable, Wraps
         {future_info, Ref, undefined, undefined, undefined} ->
             %% io:format("Cloning empty future~n"),
@@ -157,13 +157,13 @@ set_error(Error, #future{} = Self) ->
 set_error(Class, Error, #future{} = Self) ->
     Self:error(Class, Error, []).
 
-set_error(Class, Error, Stacktrace, #future{proc = Proc, ref = Ref} = Self) ->
+set_error(Class, Error, Stacktrace, #future{ref = Ref} = Self) ->
     Err = {Class, Error, Stacktrace},
-    Proc:send({set, Ref, {error, Err}}),
+    do_call(Self, {set, Ref, self(), {error, Err}}, set),
     Self#future{result = {error, Err}}.
 
-set(Value, #future{proc = Proc, ref = Ref} = Self) ->
-    Proc:send({set, Ref, {value, Value}}),
+set(Value, #future{ref = Ref} = Self) ->
+    do_call(Self, {set, Ref, self(), {value, Value}}, set),
     Self#future{result = {value, Value}}.
 
 done(#future{proc = Proc, ref = Ref} = _Self) ->
@@ -190,10 +190,8 @@ as_fun(Self) ->
 
 ready(#future{result = {_Type, _Value}}) ->
     true;
-ready(#future{proc = Proc, ref = Ref, result = undefined} = _Self) ->
-    Proc:send({ready, Ref, self()}),
-    %%TODO: should monitor a future process
-    receive
+ready(#future{ref = Ref, result = undefined} = Self) ->
+    case do_call(Self, {ready, Ref, self()}, future_ready) of
         {future_ready, Ref, Ready} ->
             Ready
     end.
@@ -241,12 +239,17 @@ chain(C1, C2) when ?is_futurable(C1), is_function(C2, 1) ->
 
 collect(Futures) ->
     L = [ {F, attach(F)} || F <- Futures ],
-    Res = [ do_detach(Attach, F) || {F, Attach} <- L ],
+    Res = [ detach(Attach, F) || {F, Attach} <- L ],
     %% [ F:done() || F <- Futures ],
     [ handle(R) || R <- Res ].
 
 cancel(#future{proc = Proc, ref = Ref} = F) ->
-    Proc:send({cancel, Ref}), %% should do monitoring here to make sure it's dead
+    Mon = Proc:monitor(),
+    Proc:send({cancel, Ref}), %%TODO: should do monitoring here to make sure it's dead
+    receive
+        {'DOWN', Mon, process, _Pid, normal} -> ok
+    end,
+    Proc:demonitor(Mon),
     F#future{proc = undefined, ref = Ref}.
 
 
@@ -274,7 +277,7 @@ timeout(F) ->
 timeout(F, Timeout) ->
     wrap(fun(#future{proc = Proc} = X) ->
                  {Ref, Mon} = attach(X),
-                 %% do_detach is done below
+                 %% unwrapped do_detach is done below
                  receive
                      {future, Ref, Res} ->
                          case Mon of
@@ -284,8 +287,10 @@ timeout(F, Timeout) ->
                          %% X:done(),
                          handle(Res);
                      {'DOWN', Mon, process, _Pid, Reason} ->
+                         Proc:demonitor(Mon),
                          reraise_down_reason(Reason)
                  after Timeout ->
+                         Proc:demonitor(Mon),
                          X:cancel(),
                          throw(timeout)
                  end
@@ -365,13 +370,15 @@ loop0(#state{ref = Ref,
             end,
             ok;
 
-        {execute, Ref, Fun} ->
+        {execute, Ref, Caller, Fun} ->
             case Worker of
                 undefined ->
+                    Caller ! {executing, Ref},
                     NewWorker = do_exec(Ref, Fun, []),
                     loop0(State#state{worker = NewWorker, executable = Fun});
                 _ ->
-                    loop0(State) %%TODO: crash calling process with future_already_bound
+                    exit(Caller, badfuture),
+                    loop0(State)
             end;
 
         {computed, Ref, Result} ->
@@ -382,12 +389,14 @@ loop0(#state{ref = Ref,
             end,
             loop0(State#state{waiting = [], result = Result, worker = undefined});
 
-        {set, Ref, Result} ->
+        {set, Ref, Caller, Result} ->
             case Worker of
                 undefined ->
+                    Caller ! {set},
                     notify(Ref, Waiting, Result),
                     loop0(State#state{waiting = [], result = Result});
                 _ ->
+                    exit(Caller, badfuture),
                     loop0(State)
             end;
 
@@ -412,9 +421,13 @@ loop0(#state{ref = Ref,
             loop0(State);
         {cancel, Ref}      -> ok;
         {done, Ref}        -> ok;           %% upon receiving done bounded future terminates
-        {execute, Ref, _}  -> loop0(State); %% futures can be bound only once
+        {execute, Ref, Caller, _Fun}  ->
+            exit(Caller, badfuture),
+            loop0(State); %% futures can be bound only once
         {computed, Ref, _} -> exit(bug);    %% futures can be bound only once
-        {set, Ref, _}      -> loop0(State); %% futures can be bound only once
+        {set, Ref, Caller, _Value}      ->
+            exit(Caller, badfuture),
+            loop0(State); %% futures can be bound only once
         {ready, Ref, Requester} ->
             Requester ! {future_ready, Ref, true},
             loop0(State);
@@ -445,6 +458,21 @@ do_exec(Ref, Fun, Args) ->
               end
       end).
 
+do_call(#future{proc = Proc}, Msg, RespTag) ->
+    Mon = Proc:monitor(),
+    Proc:send(Msg),
+    receive
+        %% future_info, Ref, Result, Executable, Wraps
+        Resp when is_tuple(Resp),
+                  element(1, Resp) == RespTag ->
+            Proc:demonitor(Mon),
+            Resp;
+        {'DOWN', Mon, process, _Pid, Reason} ->
+            Proc:demonitor(Mon),
+            reraise_down_reason(Reason)
+    end.
+
+
 %% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%
 %% API helpers
@@ -455,7 +483,7 @@ do_get(#future{result = Res} = Self) when ?is_realized(Self) ->
     Res;
 do_get(#future{} = Self) ->
     Att = attach(Self),
-    do_detach(Att, Self).
+    detach(Att, Self).
 
 attach(#future{proc = Proc, ref = Ref, result = undefined} = _Self) ->
     Mon = Proc:monitor(),
@@ -465,10 +493,7 @@ attach(#future{ref = Ref, result = {_Type, _Value} = Result} = _Self) ->
     self() ! {future, Ref, Result},
     {Ref, undefined}.
 
-%% detach(Att, Self) ->
-%%     handle(do_detach(Att, Self)).
-
-do_detach({Ref, Mon}, #future{ref = Ref, proc = Proc} = _Self) ->
+detach({Ref, Mon}, #future{ref = Ref, proc = Proc} = _Self) ->
     receive
         {future, Ref, Res} ->
             case Mon of
@@ -477,6 +502,7 @@ do_detach({Ref, Mon}, #future{ref = Ref, proc = Proc} = _Self) ->
             end,
             Res;
         {'DOWN', Mon, process, _Pid, Reason} ->
+            Proc:demonitor(Mon),
             reraise_down_reason(Reason)
     end.
 
@@ -494,7 +520,7 @@ reraise({Class, Error, ErrorStacktrace}) ->
 
 reraise_down_reason(Reason) ->
     case Reason of
-        {{nocatch,Error},Stack} ->
+        {{nocatch, Error}, Stack} ->
             reraise({throw, Error, Stack});
         {Error,Stack} ->
             reraise({error, Error, Stack});
