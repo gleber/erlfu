@@ -85,7 +85,7 @@ Run!
 Run!
 75
 ```
-Please note that currently futures are cloned shallowly.
+Deeply wrapped futures can be cloned as well, see `future_tests:clone_side_effect_fun_test/0`.
 
 Multiple futures' values can be collected. If one future fails
 everything will fail:
@@ -96,6 +96,22 @@ everything will fail:
 {future,<0.53.0>,#Ref<0.0.0.76941>,undefined}
 7> lists:sum(future:collect([F1, F2])).
 15
+```
+
+One can map over futures, which allows to run multiple concurrent
+computations in parallel:
+```erlang
+1> F1 = future:new(fun() -> timer:sleep(3000), 10 end).
+{future,{gcproc,<0.45.0>,{resource,35806032,<<>>}},
+        #Ref<0.0.0.86>,undefined}
+2> F2 = future:new(fun() -> timer:sleep(3000), 5 end).
+{future,{gcproc,<0.49.0>,{resource,35805216,<<>>}},
+        #Ref<0.0.0.92>,undefined}
+3> F3 = future:map(fun(X) -> X:get() * 2 end, [F1, F2]).
+{future,{gcproc,<0.52.0>,{resource,35798200,<<>>}},
+        #Ref<0.0.0.97>,undefined}
+4> F3:get().
+[20,10]
 ```
 
 ### Compositions ###
@@ -148,9 +164,6 @@ or
      in call from future:'-do_exec/3-fun-0-'/3 (src/future.erl, line 43)
      in call from future:reraise/1 (src/future.erl, line 232)
 ```
-
-Note: retry wrapper does work only on shallow futures, since cloning
-is still shallow.
 
 #### Safe ####
 Safe wrapper wraps future execution and catches errors and exits:

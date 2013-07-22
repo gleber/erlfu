@@ -12,7 +12,7 @@
          set_error/3,  %% as above
          set_error/4,  %% as above
          execute/2,    %% tells future to execute a fun and set it's own value,
-         clone/1,      %% clones a future (use with care)
+         clone/1,      %% clones a future (clone properly clones deeply wrapped futures)
 
          %% getting
          ready/1,      %% returns true if future is bounded
@@ -87,7 +87,17 @@ new0(Future, []) when ?is_future(Future) ->
 new0(Fun, Opts) when is_function(Fun, 0) ->
     Ref = make_ref(),
     Proc = gcproc:spawn(fun() ->
-                                W = do_exec(Ref, Fun),
+                                W = do_exec(Ref, Fun, []),
+                                loop(#state{ref = Ref, worker = W, executable = Fun, opts = Opts})
+                        end),
+    #future{proc = Proc, ref = Ref};
+
+new0(Fun, Opts) when is_function(Fun, 1) ->
+    Ref = make_ref(),
+    Wraps = proplists:get_value(wraps, Opts),
+    true = (Wraps /= undefined),
+    Proc = gcproc:spawn(fun() ->
+                                W = do_exec(Ref, Fun, [Wraps]),
                                 loop(#state{ref = Ref, worker = W, executable = Fun, opts = Opts})
                         end),
     #future{proc = Proc, ref = Ref}.
@@ -346,7 +356,7 @@ loop0(#state{ref = Ref,
         {execute, Ref, Fun} ->
             case Worker of
                 undefined ->
-                    NewWorker = do_exec(Ref, Fun),
+                    NewWorker = do_exec(Ref, Fun, []),
                     loop0(State#state{worker = NewWorker, executable = Fun});
                 _ ->
                     loop0(State) %%TODO: crash calling process with future_already_bound
@@ -410,12 +420,12 @@ notify(Ref, [P|T], Result) ->
     P ! {future, Ref, Result},
     notify(Ref, T, Result).
 
-do_exec(Ref, Fun) ->
+do_exec(Ref, Fun, Args) ->
     Pid = self(),
     spawn_monitor(
       fun() ->
               try
-                  Res = Fun(),
+                  Res = apply(Fun, Args),
                   Pid ! {computed, Ref, {value, Res}}
               catch
                   Class:Error ->

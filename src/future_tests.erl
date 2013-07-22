@@ -53,30 +53,69 @@ clone_fun_test() ->
     F3 = F2:realize(),
     ?assertEqual(43, F3:get()).
 
-%% clone_deep_fun_test() ->
-%%     Fun1V = 1,
-%%     Fun2V = 2,
-%%     Fun3V = 3,
-%%     F1 = future:new(fun() ->
-%%                             term_to_binary(Fun1V),
-%%                             Fun1V
-%%                     end),
-%%     %% ?assertEqual(1, F1:get()),
-%%     %% F1C = F1:clone(),
-%%     %% ?assertEqual(1, F1C:get()),
-%%     F2 = future:wrap(fun(X) ->
-%%                              term_to_binary(Fun2V),
-%%                              X:get() + Fun2V
-%%                      end, F1),
-%%     %% ?assertEqual(3, F2:get()),
-%%     F3 = future:wrap(fun(Y) ->
-%%                              term_to_binary(Fun3V),
-%%                              Y:get() + Fun3V
-%%                      end, F2),
-%%     %% ?assertEqual(6, F3:get()),
-%%     F3C = F3:clone(),
-%%     ?assertEqual(6, F3C:get()),
-%%     ok.
+clone_deep_fun_test() ->
+    F1 = future:new(fun() ->
+                            1
+                    end),
+    ?assertEqual(1, F1:get()),
+    F1C = F1:clone(),
+    ?assertEqual(1, F1C:get()),
+    F2 = future:wrap(fun(X) ->
+                             X:get() + 2
+                     end, F1),
+    ?assertEqual(3, F2:get()),
+    F2C = F2:clone(),
+    ?assertEqual(3, F2C:get()),
+    F3 = future:wrap(fun(Y) ->
+                             Y:get() + 3
+                     end, F2),
+    ?assertEqual(6, F3:get()),
+    F3C = F3:clone(),
+    ?assertEqual(6, F3C:get()),
+    F4 = future:wrap(fun(Z) ->
+                             Z:get() + 4
+                     end, F3),
+    ?assertEqual(10, F4:get()),
+    F4C = F4:clone(),
+    ?assertEqual(10, F4C:get()),
+    ok.
+
+clone_clones_fun_test() ->
+    F1 = future:new(fun() ->
+                            1
+                    end),
+    F1C = F1:clone(),
+    F2 = future:wrap(fun(X) ->
+                             X:get() + 2
+                     end, F1C),
+    F2C = F2:clone(),
+    F3 = future:wrap(fun(Y) ->
+                             Y:get() + 3
+                     end, F2C),
+    F3C = F3:clone(),
+    ?assertEqual(6, F3C:get()).
+
+clone_side_effect_fun_test() ->
+    Self = self(),
+    F1 = future:new(fun() ->
+                            Self ! 1
+                    end),
+    F2 = future:wrap(fun(X) ->
+                             X:get() + (Self ! 2)
+                     end, F1),
+    F3 = future:wrap(fun(Y) ->
+                             Y:get() + (Self ! 3)
+                     end, F2),
+    ?assertEqual(6, F3:get()),
+    timer:sleep(100),
+    %% we should have exactly three messages in the queue
+    ?assertEqual({messages, [1,2,3]}, process_info(self(), messages)),
+    F3C = F3:clone(),
+    ?assertEqual(6, F3C:get()),
+    timer:sleep(100),
+    %% we should have exactly six (three old plus three new) messages in the queue
+    ?assertEqual({messages, [1,2,3,1,2,3]}, process_info(self(), messages)),
+    ok.
 
 clone2_fun_test() ->
     Self = self(),
