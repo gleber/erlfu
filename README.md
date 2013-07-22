@@ -86,6 +86,7 @@ Run!
 75
 ```
 Deeply wrapped futures can be cloned as well, see `future_tests:clone_side_effect_fun_test/0`.
+Combined futures can be cloned as well, see `future_tests:clone_combined_test/0`.
 
 Multiple futures' values can be collected. If one future fails
 everything will fail:

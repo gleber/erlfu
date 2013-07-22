@@ -95,6 +95,28 @@ clone_clones_fun_test() ->
     F3C = F3:clone(),
     ?assertEqual(6, F3C:get()).
 
+clone_combined_test() ->
+    {messages, []} = process_info(self(), messages),
+    Self = self(),
+    F1 = future:new(fun() ->
+                            Self ! 1
+                    end),
+    F2 = future:new(fun() ->
+                            Self ! 2
+                    end),
+    F3 = future:combine([F1, F2]),
+    ?assertEqual([1, 2], F3:get()),
+    timer:sleep(100),
+    %% we should have exactly two messages in the queue
+    ?assertEqual({messages, [1,2]}, process_info(self(), messages)),
+    F3C = F3:clone(),
+    ?assertEqual([1, 2], F3C:get()),
+    timer:sleep(100),
+    %% we should have exactly six (three old plus three new) messages in the queue
+    ?assertEqual({messages, [1,2,1,2]}, process_info(self(), messages)),
+    flush(),
+    ok.
+
 clone_side_effect_fun_test() ->
     Self = self(),
     F1 = future:new(fun() ->
@@ -115,6 +137,7 @@ clone_side_effect_fun_test() ->
     timer:sleep(100),
     %% we should have exactly six (three old plus three new) messages in the queue
     ?assertEqual({messages, [1,2,3,1,2,3]}, process_info(self(), messages)),
+    flush(),
     ok.
 
 clone2_fun_test() ->
@@ -136,7 +159,8 @@ clone2_fun_test() ->
     after 200 ->
             error(timeout)
     end,
-    ?assertEqual(43, F3:get()).
+    ?assertEqual(43, F3:get()),
+    flush().
 
 clone_retry_test() ->
     Self = self(),
@@ -149,7 +173,8 @@ clone_retry_test() ->
     receive 2 -> ok after 200 -> error(timeout) end,
     receive 2 -> ok after 200 -> error(timeout) end,
     receive 2 -> ok after 200 -> error(timeout) end,
-    ?assertException(error, {retry_limit_reached, 3, _}, F3:get()).
+    ?assertException(error, {retry_limit_reached, 3, _}, F3:get()),
+    flush().
 
 cancel_test() ->
     Self = self(),
@@ -235,3 +260,11 @@ collect_test() ->
                           future:new(Fun),
                           future:new(Fun)]),
     ?assertEqual([1,2,3], lists:sort(Res)).
+
+
+flush() ->
+    receive
+        _ -> flush()
+    after 0 ->
+            ok
+    end.

@@ -145,7 +145,11 @@ clone(#future{proc = Proc, ref = Ref}) -> %% does not clone multi-level futures!
         {future_info, Ref, _, Fun, Wraps} when is_function(Fun), ?is_future(Wraps) ->
             %% io:format("Cloning fun ~p future which wraps ~p~n", [erlang:fun_info(Fun), Wraps]),
             Wraps2 = Wraps:clone(),
-            wrap(Fun, Wraps2)
+            wrap(Fun, Wraps2);
+        {future_info, Ref, _, Fun, ListOfWraps} when is_function(Fun), is_list(ListOfWraps) ->
+            %% io:format("Cloning fun ~p future which wraps multiple futures ~p~n", [erlang:fun_info(Fun), Wraps]),
+            ListOfWraps2 = [ X:clone() || X <- ListOfWraps ],
+            wrap(Fun, ListOfWraps2)
     end.
 
 set_error(Error, #future{} = Self) ->
@@ -195,26 +199,34 @@ ready(#future{proc = Proc, ref = Ref, result = undefined} = _Self) ->
     end.
 
 combine(Futures) ->
-    new(fun() -> collect(Futures) end).
+    new0(fun(X) -> collect(X) end,
+         [{wraps, Futures}]).
 
 map(Fun, Futures) ->
-    new(fun() ->
-                Fs = [ wrap(Fun, F) || F <- Futures ],
-                collect(Fs)
-        end).
+    new0(fun(X) ->
+                 Fs = [ wrap(Fun, F) || F <- X ],
+                 collect(Fs)
+         end,
+         [{wraps, Futures}]).
 
 wrap([Initial0|List]) when ?is_futurable(Initial0) ->
     Initial = new(Initial0),
     lists:foldl(fun wrap/2, Initial, List).
 
+wrap(Wrapper, Futures0) when is_function(Wrapper),
+                             is_list(Futures0) ->
+    {wrapper_arity_1, true, _} = {wrapper_arity_1, is_function(Wrapper, 1), erlang:fun_info(Wrapper)},
+    Futures = [ new(X) || X <- Futures0 ],
+    new0(fun(X) ->
+                 Wrapper(X) %%X:done()
+         end,
+         [{wraps, Futures}]);
 wrap(Wrapper, Future0) when is_function(Wrapper),
                             ?is_futurable(Future0) ->
     {wrapper_arity_1, true, _} = {wrapper_arity_1, is_function(Wrapper, 1), erlang:fun_info(Wrapper)},
     Future = new(Future0),
-    new0(fun() ->
-                 R = Wrapper(Future),
-                 %% Future:done(),
-                 R
+    new0(fun(X) ->
+                 Wrapper(X) %%X:done()
          end,
          [{wraps, Future}]).
 
