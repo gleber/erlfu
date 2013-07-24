@@ -30,6 +30,19 @@ get_test() ->
     F:done(),
     ?assertEqual(42, Val).
 
+double_set_good_test() ->
+    F = future:new(),
+    F:set(42),
+    F:set(42),
+    Val = F:get(),
+    F:done(),
+    ?assertEqual(42, Val).
+
+double_set_bad_test() ->
+    F = future:new(),
+    F:set(42),
+    ?assertException(error, badfuture, F:set(wontwork)).
+
 realize_test() ->
     F = future:new(),
     F:set(42),
@@ -135,7 +148,7 @@ clone_side_effect_fun_test() ->
     F3C = F3:clone(),
     ?assertEqual(6, F3C:get()),
     timer:sleep(100),
-    %% we should have exactly six (three old plus three new) messages in the queue
+    %% we should have exactly six (three old + three new) messages in the queue
     ?assertEqual({messages, [1,2,3,1,2,3]}, process_info(self(), messages)),
     flush(),
     ok.

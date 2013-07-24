@@ -131,23 +131,17 @@ clone(#future{ref = Ref} = Self) -> %% does not clone multi-level futures!!!
     case Info of
         %% future_info, Ref, Result, Executable, Wraps
         {future_info, Ref, undefined, undefined, undefined} ->
-            %% io:format("Cloning empty future~n"),
             new();
         {future_info, Ref, {value, Result}, undefined, undefined} ->
-            %% io:format("Cloning static val future~n"),
             new_static(Result);
         {future_info, Ref, {error, {Class, Error, Stack}}, undefined, undefined} ->
-            %% io:format("Cloning static error future~n"),
             new_static_error(Class, Error, Stack);
         {future_info, Ref, _, Fun, undefined} when is_function(Fun) ->
-            %% io:format("Cloning fun ~p future~n", [erlang:fun_info(Fun)]),
             new(Fun);
         {future_info, Ref, _, Fun, Wraps} when is_function(Fun), ?is_future(Wraps) ->
-            %% io:format("Cloning fun ~p future which wraps ~p~n", [erlang:fun_info(Fun), Wraps]),
             Wraps2 = Wraps:clone(),
             wrap(Fun, Wraps2);
         {future_info, Ref, _, Fun, ListOfWraps} when is_function(Fun), is_list(ListOfWraps) ->
-            %% io:format("Cloning fun ~p future which wraps multiple futures ~p~n", [erlang:fun_info(Fun), Wraps]),
             ListOfWraps2 = [ X:clone() || X <- ListOfWraps ],
             wrap(Fun, ListOfWraps2)
     end.
@@ -377,7 +371,7 @@ loop0(#state{ref = Ref,
                     NewWorker = do_exec(Ref, Fun, []),
                     loop0(State#state{worker = NewWorker, executable = Fun});
                 _ ->
-                    exit(Caller, badfuture),
+                    Caller ! {'EXIT', executing, Ref, badfuture},
                     loop0(State)
             end;
 
@@ -396,7 +390,7 @@ loop0(#state{ref = Ref,
                     notify(Ref, Waiting, Result),
                     loop0(State#state{waiting = [], result = Result});
                 _ ->
-                    exit(Caller, badfuture),
+                    Caller ! {'EXIT', set, Ref, badfuture},
                     loop0(State)
             end;
 
@@ -419,14 +413,17 @@ loop0(#state{ref = Ref,
         {get_info, Ref, Requester} ->
             Requester ! {future_info, Ref, Result, Exec, proplists:get_value(wraps, Opts)},
             loop0(State);
-        {cancel, Ref}      -> ok;
-        {done, Ref}        -> ok;           %% upon receiving done bounded future terminates
-        {execute, Ref, Caller, _Fun}  ->
-            exit(Caller, badfuture),
+        {cancel, Ref} -> ok;
+        {done, Ref}   -> ok;           %% upon receiving done bounded future terminates
+        {execute, Ref, Caller, _Fun} ->
+            Caller ! {'EXIT', executing, Ref, badfuture},
             loop0(State); %% futures can be bound only once
-        {computed, Ref, _} -> exit(bug);    %% futures can be bound only once
-        {set, Ref, Caller, _Value}      ->
-            exit(Caller, badfuture),
+        {computed, Ref, _} -> exit(bug); %% futures can be bound only once
+        {set, Ref, Caller, Result} ->
+            Caller ! {set},
+            loop0(State);
+        {set, Ref, Caller, _V} ->
+            Caller ! {'EXIT', executing, Ref, badfuture},
             loop0(State); %% futures can be bound only once
         {ready, Ref, Requester} ->
             Requester ! {future_ready, Ref, true},
@@ -458,13 +455,19 @@ do_exec(Ref, Fun, Args) ->
               end
       end).
 
-do_call(#future{proc = Proc}, Msg, RespTag) ->
+do_call(#future{proc = Proc, ref = Ref}, Msg, RespTag) ->
     Mon = Proc:monitor(),
     Proc:send(Msg),
     receive
-        %% future_info, Ref, Result, Executable, Wraps
         Resp when is_tuple(Resp),
-                  element(1, Resp) == RespTag ->
+                  element(1, Resp) == 'EXIT';
+                  element(2, Resp) == RespTag;
+                  element(3, Resp) == Ref ->
+            Proc:demonitor(Mon),
+            error(element(4, Resp));
+        Resp when is_tuple(Resp),
+                  element(1, Resp) == RespTag;
+                  element(2, Resp) == Ref ->
             Proc:demonitor(Mon),
             Resp;
         {'DOWN', Mon, process, _Pid, Reason} ->
