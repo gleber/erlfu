@@ -126,7 +126,7 @@ execute(Fun, #future{ref = Ref} = Self) when is_function(Fun, 0) ->
     do_call(Self, {execute, Ref, self(), Fun}, executing),
     Self.
 
-clone(#future{ref = Ref} = Self) -> %% does not clone multi-level futures!!!
+clone(#future{ref = Ref} = Self) ->
     Info = do_call(Self, {get_info, Ref, self()}, future_info),
     case Info of
         %% future_info, Ref, Result, Executable, Wraps
@@ -161,7 +161,7 @@ set(Value, #future{ref = Ref} = Self) ->
     Self#future{result = {value, Value}}.
 
 done(#future{proc = Proc, ref = Ref} = _Self) ->
-    %% Let future process know it should finish as soon as it is done
+    %% Let future process know it should terminate gracefully as soon as it is done
     Proc:send({done, Ref}),
     ok.
 
@@ -346,6 +346,10 @@ loop0(#state{ref = Ref,
              worker = Worker,
              executable = Exec,
              opts = Opts} = State) ->
+    {WorkerPid, WorkerMon} = case Worker of
+                                 {_,_} -> Worker;
+                                 undefined -> {undefined, undefined}
+                             end,
     receive
         {get_info, Ref, Requester} ->
             Requester ! {future_info, Ref,
@@ -377,9 +381,8 @@ loop0(#state{ref = Ref,
 
         {computed, Ref, Result} ->
             notify(Ref, Waiting, Result),
-            {Pid, MonRef} = Worker,
             receive
-                {'DOWN', MonRef, process, Pid, _} -> ok
+                {'DOWN', WorkerMon, process, WorkerPid, _} -> ok
             end,
             loop0(State#state{waiting = [], result = Result, worker = undefined});
 
@@ -399,7 +402,10 @@ loop0(#state{ref = Ref,
             loop0(State);
 
         {get, Ref, Requester} ->
-            loop0(State#state{waiting = [Requester | Waiting]})
+            loop0(State#state{waiting = [Requester | Waiting]});
+
+        {'DOWN', WorkerMon, process, WorkerPid, Reason} ->
+            reraise_down_reason(Reason)
     end;
 
 %% loop of a bounded future

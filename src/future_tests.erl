@@ -49,6 +49,23 @@ realize_test() ->
     F2 = F:realize(),
     ?assertEqual(42, F2:get()).
 
+worker_killed_test() ->
+    Fun = fun() ->
+                  exit(self(), kill)
+          end,
+    F = future:new(Fun),
+    ?assertException(exit, killed, F:get()).
+
+future_killed_test() ->
+    Fun = fun() ->
+                  timer:sleep(100000)
+          end,
+    F = future:new(Fun),
+    Proc = element(2, F),
+    Pid = Proc:pid(),
+    exit(Pid, kill),
+    ?assertException(exit, killed, F:get()).
+
 clone_val_test() ->
     F = future:new(),
     F:set(42),
@@ -192,12 +209,12 @@ clone_retry_test() ->
 cancel_test() ->
     Self = self(),
     F = future:new(fun() ->
-                           timer:sleep(1000),
+                           timer:sleep(100),
                            exit(Self, kill),
                            42
                    end),
     F:cancel(),
-    timer:sleep(50),
+    timer:sleep(300),
     true.
 
 safe_ok_test() ->
