@@ -291,6 +291,39 @@ collect_test() ->
                           future:new(Fun)]),
     ?assertEqual([1,2,3], lists:sort(Res)).
 
+any_test() ->
+    T = ets:new(any_test, [public]),
+    ets:insert(T, {counter, 0}),
+    Fun = fun() ->
+                  ets:update_counter(T, counter, 1)
+          end,
+    Res = future:collect_any([future:new(Fun),
+                              future:new(Fun),
+                              future:new(Fun)]),
+    ?assert(lists:member(Res, [1,2,3])).
+
+any_all_fail_test() ->
+    Fun = fun() ->
+                  error(lets_fail)
+          end,
+    All = [future:new(Fun),
+           future:new(Fun),
+           future:new(Fun)],
+    ?assertException(error,
+                     all_futures_failed,
+                     future:collect_any(All)).
+
+any_all_down_test() ->
+    Fun = fun() ->
+                  exit(self(), kill)
+          end,
+    All = [future:new(Fun),
+           future:new(Fun),
+           future:new(Fun)],
+    ?assertException(error,
+                     all_futures_failed,
+                     future:collect_any(All)).
+
 
 flush() ->
     receive

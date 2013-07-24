@@ -27,7 +27,8 @@
         ]).
 
 %% collections
--export([collect/1,       %% collect values from multile futures
+-export([collect/1, collect_all/1, %% collect values from multile futures
+         collect_any/1,   %% finds first available value among provided futures
          combine/1,       %% combines multiple futures into a future which returns a list of values
          map/2,           %% maps multiple futures with a fun and returns combined future
          wrap/1, wrap/2,  %% wraps a future with a fun, returning wrapping future
@@ -190,16 +191,14 @@ ready(#future{ref = Ref, result = undefined} = Self) ->
             Ready
     end.
 
-combine(Futures) ->
-    new0(fun(X) -> collect(X) end,
-         [{wraps, Futures}]).
-
-map(Fun, Futures) ->
-    new0(fun(X) ->
-                 Fs = [ wrap(Fun, F) || F <- X ],
-                 collect(Fs)
-         end,
-         [{wraps, Futures}]).
+cancel(#future{proc = Proc, ref = Ref} = F) ->
+    Mon = Proc:monitor(),
+    Proc:send({cancel, Ref}),
+    receive
+        {'DOWN', Mon, process, _Pid, normal} -> ok
+    end,
+    Proc:demonitor(Mon),
+    F#future{proc = undefined, ref = Ref}.
 
 wrap([Initial0|List]) when ?is_futurable(Initial0) ->
     Initial = new(Initial0),
@@ -231,20 +230,53 @@ chain([C|List]) when is_list(List) ->
 chain(C1, C2) when ?is_futurable(C1), is_function(C2, 1) ->
     chain0(C1, C2, []).
 
+map(Fun, Futures) ->
+    new0(fun(X) ->
+                 Fs = [ wrap(Fun, F) || F <- X ],
+                 collect(Fs)
+         end,
+         [{wraps, Futures}]).
+
+combine(Futures) ->
+    new0(fun(X) -> collect(X) end,
+         [{wraps, Futures}]).
+
 collect(Futures) ->
     L = [ {F, attach(F)} || F <- Futures ],
     Res = [ detach(Attach, F) || {F, Attach} <- L ],
     %% [ F:done() || F <- Futures ],
     [ handle(R) || R <- Res ].
 
-cancel(#future{proc = Proc, ref = Ref} = F) ->
-    Mon = Proc:monitor(),
-    Proc:send({cancel, Ref}), %%TODO: should do monitoring here to make sure it's dead
+collect_all(Futures) ->
+    collect(Futures).
+
+collector_any([]) ->
+    error(all_futures_failed);
+collector_any(L) ->
     receive
-        {'DOWN', Mon, process, _Pid, normal} -> ok
-    end,
-    Proc:demonitor(Mon),
-    F#future{proc = undefined, ref = Ref}.
+        {future, Ref, Res} ->
+            true = lists:keymember(Ref, 2, L),
+            case Res of
+                {value, _} -> handle(Res);
+                {error, _} ->
+                    L2 = lists:keydelete(Ref, 2, L),
+                    collector_any(L2)
+            end;
+        {'DOWN', Mon, process, _Pid, _Reason} ->
+            {value, _, L2} = lists:keytake(Mon, 3, L),
+            collector_any(L2)
+    end.
+
+collect_any(Futures) ->
+    Collector0 =
+        future:new(
+          fun() ->
+                  L = [ {F, Ref, Mon} || F <- Futures,
+                                         {Ref, Mon} <- [attach(F)]],
+                  collector_any(L)
+          end),
+    Collector = Collector0:realize(),
+    Collector:get().
 
 
 %% =============================================================================

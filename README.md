@@ -1,7 +1,10 @@
 # Erlfu #
 
-Futures implemented in Erlang. Very basic implementation using
-processes to represent a future.
+Futures implemented in Erlang. It's an implementation using processes
+to represent a future. These futures can be used to:
+1. Store a value later on
+2. Compute a value using a fun
+3. Chain/wrap futures to archive feature composition
 
 Futures are actually [garbage collected processes](http://github.com/gleber/gcproc)
 which are based on Tony Rogvall's [resource](http://github.com/tonyrog/resource) project.
@@ -9,7 +12,8 @@ which are based on Tony Rogvall's [resource](http://github.com/tonyrog/resource)
 Notes on limitations:
 
 1. requires SMP support
-2. garbage collection works only locally
+2. garbage collection works only locally (i.e. future which is not
+referenced on the node where it was created will be garbage collected)
 
 ## Goals ##
 
@@ -26,8 +30,8 @@ Inspired by http://monkey.org/~marius/talks/twittersystems/
 - add on_success/1 and on_failure/1
 - add wrappers that pass params to other futures for sharding and authentication
 - add complex composition to
-  - wait for all
-  - wait for one
+  - DONE wait for all
+  - DONE wait for any
   - wait for specific, but gather other values
 
 ## Compositions ##
