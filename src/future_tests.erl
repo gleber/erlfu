@@ -2,6 +2,7 @@
 
 -include_lib("proper/include/proper.hrl").
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("erlfu/include/erlfu.hrl").
 
 
 -define(QC(Arg), proper:quickcheck(Arg, [])).
@@ -280,50 +281,149 @@ retry_fail_test() ->
     F3 = F2:realize(),
     ?assertException(error, {retry_limit_reached, 3, _}, F3:get()).
 
-collect_test() ->
+combine_test() ->
     T = ets:new(collect_test, [public]),
     ets:insert(T, {counter, 0}),
     Fun = fun() ->
                   ets:update_counter(T, counter, 1)
           end,
-    Res = future:collect([future:new(Fun),
-                          future:new(Fun),
-                          future:new(Fun)]),
+    F = future:combine([future:new(Fun),
+                        future:new(Fun),
+                        future:new(Fun)]),
+    Res = F:get(),
     ?assertEqual([1,2,3], lists:sort(Res)).
 
-any_test() ->
-    T = ets:new(any_test, [public]),
+select_static_errors_test() ->
+    F = future:select_full([F1 = future:new(),
+                            F2 = future:new()]),
+    F1:set_error(badarg),
+    F2:set_error(badarg),
+    ?assertException(error,
+                     all_futures_failed,
+                     F:get()).
+
+select_static_both_test() ->
+    F = future:select_full([F1 = future:new(),
+                            F2 = future:new()]),
+    F1:set(1),
+    F2:set_error(badarg),
+    SR = F:get(),
+    ?assertMatch({_, [_], []}, SR).
+
+select_static_slow_test() ->
+    F = future:select_full([ F1 = future:new(),
+                             _F2 = future:new()]),
+    F1:set(1),
+    SR = F:get(),
+    ?assertMatch({_, [], [_]}, SR).
+
+select_mixed_test() ->
+    T = ets:new(select_test, [public]),
     ets:insert(T, {counter, 0}),
     Fun = fun() ->
-                  ets:update_counter(T, counter, 1)
+                  I = ets:update_counter(T, counter, 1),
+                  timer:sleep(I * 100),
+                  I
           end,
-    Res = future:collect_any([future:new(Fun),
-                              future:new(Fun),
-                              future:new(Fun)]),
-    ?assert(lists:member(Res, [1,2,3])).
+    SR = future:select_full([future:new_static_error(badarg),
+                             future:new(Fun),
+                             future:new(Fun),
+                             future:new(Fun)]),
+    ?assertMatch({_, [_], [_, _]}, SR:get()),
+    {F, Errors, _Slow} = SR:get(),
+    ?assertEqual(1, F:get()),
+    [E] = Errors,
+    ?assertException(error, badarg, E:get()).
 
-any_all_fail_test() ->
+select_all_fail_test() ->
     Fun = fun() ->
                   error(lets_fail)
           end,
-    All = [future:new(Fun),
-           future:new(Fun),
-           future:new(Fun)],
+    F = future:select_full([future:new(Fun),
+                            future:new(Fun),
+                            future:new(Fun)]),
     ?assertException(error,
                      all_futures_failed,
-                     future:collect_any(All)).
+                     F:get()).
 
-any_all_down_test() ->
+select_all_down_test() ->
     Fun = fun() ->
                   exit(self(), kill)
           end,
     All = [future:new(Fun),
            future:new(Fun),
            future:new(Fun)],
+    F = future:select(All),
     ?assertException(error,
                      all_futures_failed,
-                     future:collect_any(All)).
+                     F:get()).
 
+wait_for_test() ->
+    Pid = spawn(fun() -> timer:sleep(100) end),
+    F = future:wait_for(Pid),
+    ?assertMatch(normal, F:get()).
+
+wait_for_fail_test() ->
+    Pid = spawn(fun() -> timer:sleep(100), erlang:exit(badarg) end),
+    F = future:wait_for(Pid),
+    ?assertMatch(badarg, F:get()).
+
+on_success_test() ->
+    Self = self(),
+    F = future:new_static(1),
+    F:on_success(fun(X) ->
+                         Self ! {done, X}
+                 end),
+    receive
+        {done, X} ->
+            ?assertEqual(1, X)
+    after
+        200 ->
+            error(timeout)
+    end.
+
+on_done_value_test() ->
+    Self = self(),
+    F = future:new_static(777),
+    F:on_done(fun(X) ->
+                      Self ! {done, X}
+              end),
+    receive
+        {done, X} ->
+            ?assertEqual({ok, 777}, X)
+    after
+        200 ->
+            error(timeout)
+    end.
+
+on_done_error_test() ->
+    Self = self(),
+    F = future:new_static_error(throw, interrupt),
+    F:on_done(fun(X) ->
+                      Self ! {done, X}
+              end),
+    receive
+        {done, X} ->
+            ?assertEqual({error, throw, interrupt}, X)
+    after
+        200 ->
+            error(timeout)
+    end.
+
+on_success_wait_for_test() ->
+    Self = self(),
+    Pid = spawn(fun() -> timer:sleep(100) end),
+    F = future:wait_for(Pid),
+    F:on_success(fun(X) ->
+                         Self ! {dead, X}
+                 end),
+    receive
+        {dead, X} ->
+            ?assertEqual(normal, X)
+    after
+        300 ->
+            error(timeout)
+    end.
 
 flush() ->
     receive

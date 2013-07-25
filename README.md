@@ -25,23 +25,23 @@ Inspired by http://monkey.org/~marius/talks/twittersystems/
 
 ## Roadmap ##
 
-- add wait_for/1 to wait for death of a process
-- make set/2 and exec/2 transparent in regard to wrappers
-- add on_success/1 and on_failure/1
+- make set/2 and exec/2 transparent in regard to wrappers ??
 - add wrappers that pass params to other futures for sharding and authentication
 - add complex composition to
-  - DONE wait for all
-  - DONE wait for any
-  - wait for specific, but gather other values
+-- wait for specific, but gather other values
+-- retry next future if first is slow (i.e. redundant fetching data from
+   replicated database if one of shards is slow)
 
 ## Compositions ##
 
-Currently the code supports three basic compositions:
+Currently the code supports few basic compositions:
 
-1. timeout
-2. retry
-3. safe
-4. catcher
+1. combine
+2. select
+3. timeout
+4. retry
+5. safe
+6. catcher
 
 ## Examples ##
 
@@ -118,6 +118,34 @@ computations in parallel:
 4> F3:get().
 [20,10]
 ```
+
+Futures can be used to capture process termination reason:
+```erlang
+1> Pid = spawn(fun() -> timer:sleep(10000), erlang:exit(shutdown) end).
+<0.70.0>
+2> F = future:wait_for(Pid).                    
+{future,{gcproc,<0.72.0>,{resource,47420068511440,<<>>}},
+        #Ref<0.0.0.276>,undefined}
+3> F:get().
+shutdown
+```
+
+A fun can be executed when future is bound:
+```erlang
+1> Self = self().
+<0.38.0>
+2> F = future:new(fun() -> timer:sleep(1000), 42 end).
+{future,{gcproc,<0.46.0>,{resource,17793680,<<>>}},
+        #Ref<0.0.0.104>,undefined}
+3> F:on_done(fun(Result) -> Self ! Result end).
+{future,{gcproc,<0.51.0>,{resource,47235452025976,<<>>}},
+        #Ref<0.0.0.111>,undefined}
+4> flush().
+Shell got {ok,42}
+ok
+```
+`future:on_success/2` and `future:on_failure/2` can be used to execute
+a fun when future bounds to a value or to an exception respectively.
 
 ### Compositions ###
 

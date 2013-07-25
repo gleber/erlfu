@@ -6,6 +6,12 @@
          new_static/1, %% creates a future with a static value
          new_static_error/1, new_static_error/2, new_static_error/3, %% creates a future with a static error
 
+         wait_for/1,   %% bounds to process termination reason
+         on_done/2,    %% executes fun() upon execution of future() (or when it's bound)
+         on_success/2, %% executes fun() upon successful execution of future()
+         on_failure/2, %% executes fun() upon failed execution (i.e. execution
+         %%               failed with error or exit) of future()
+
          %% manipulating; all these will fail if future is already bound
          set/2,        %% sets value of a future to a term
          set_error/2,  %% sets value of a future to an error
@@ -18,7 +24,7 @@
          ready/1,      %% returns true if future is bounded
          get/1,        %% waits for future to compute and returns the value
          call/1,       %% the same as get/1
-         as_fun/1,     %% returns fun, which wraps get/1
+         as_fun/1,     %% returns fun, which returns the same value as get/1
 
          %% finishing
          realize/1,    %% waits for future to compute, stops the future process and returns bounded local future
@@ -27,12 +33,20 @@
         ]).
 
 %% collections
--export([collect/1, collect_all/1, %% collect values from multile futures
-         collect_any/1,   %% finds first available value among provided futures
+-export([select/1,        %% finds first available future among provided futures
+         select_value/1,  %% value of the above
+
+         select_full/1,   %% returns first available future among provided futures,
+         %%                  list of already failed futures and list
+         %%                  of not-yet-responded futures
+         select_full_value/1, %% value of the above
+
          combine/1,       %% combines multiple futures into a future which returns a list of values
+         combine_value/1, %% value of the above
+
          map/2,           %% maps multiple futures with a fun and returns combined future
-         wrap/1, wrap/2,  %% wraps a future with a fun, returning wrapping future
-         chain/1, chain/2 %% realizes a future and it with a fun, returning wrapping future
+         wrap/1, wrap/2,  %% returns a future, which wraps argument future with a fun
+         chain/1, chain/2 %% returns a future, which realizes argument future and wraps it with a fun
         ]).
 
 %% wrappers
@@ -43,21 +57,22 @@
          retry/1, retry/2 %% retries on errors (3 times by default)
         ]).
 
--define(is_future(F), is_record(F, future)).
--define(is_futurable(F), (?is_future(F) orelse is_function(F, 0))).
+%% low level functions - useful for implementing compositions
+-export([ref/1,    %% returns future reference
+         proc/1,   %% returns future's process as a gcproc
+         attach/1, %% attaches process to a future, which results in a message
+         %%           {future, reference(), future_res()} sent to self
+         %%           and returns future_attachment()
 
--define(is_realized(F), (?is_future(F)
-                         andalso (F#future.proc == undefined)
-                         andalso (F#future.ref == undefined))).
--opaque future() :: tuple().
-%% -type future() :: #future{}.
+         detach/2, %% detach/2 will consume the message from the future based on
+         %%           future_attachment(), and returns future_res()
+
+         handle/1  %% handles future_res(), returns appropriate value or raises appropriate exception
+        ]).
+
+-include_lib("erlfu/include/erlfu.hrl").
+
 -type future_opt() :: {'wraps', future()}.
--type future_res() :: {'value', term()} |
-                      {'error', {atom(), term(), list(term())}}.
-
--record(future, {proc        :: gcproc:gcproc(),
-                 ref         :: reference(),
-                 result      :: 'undefined' | future_res()}).
 
 -record(state, {ref          :: reference(),
                 waiting = [] :: list(pid()),
@@ -89,7 +104,10 @@ new0(Fun, Opts) when is_function(Fun, 0) ->
     Ref = make_ref(),
     Proc = gcproc:spawn(fun() ->
                                 W = do_exec(Ref, Fun, []),
-                                loop(#state{ref = Ref, worker = W, executable = Fun, opts = Opts})
+                                loop(#state{ref = Ref,
+                                            worker = W,
+                                            executable = Fun,
+                                            opts = Opts})
                         end),
     #future{proc = Proc, ref = Ref};
 
@@ -99,14 +117,18 @@ new0(Fun, Opts) when is_function(Fun, 1) ->
     true = (Wraps /= undefined),
     Proc = gcproc:spawn(fun() ->
                                 W = do_exec(Ref, Fun, [Wraps]),
-                                loop(#state{ref = Ref, worker = W, executable = Fun, opts = Opts})
+                                loop(#state{ref = Ref,
+                                            worker = W,
+                                            executable = Fun,
+                                            opts = Opts})
                         end),
     #future{proc = Proc, ref = Ref}.
 
 new_static(Term) ->
     Ref = make_ref(),
     Proc = gcproc:spawn(fun() ->
-                                loop(#state{ref = Ref, result = {value, Term}})
+                                loop(#state{ref = Ref,
+                                            result = {value, Term}})
                         end),
     #future{proc = Proc, ref = Ref}.
 
@@ -119,7 +141,8 @@ new_static_error(Class, Error) ->
 new_static_error(Class, Error, Stack) ->
     Ref = make_ref(),
     Proc = gcproc:spawn(fun() ->
-                                loop(#state{ref = Ref, result = {error, {Class, Error, Stack}}})
+                                loop(#state{ref = Ref,
+                                            result = {error, {Class, Error, Stack}}})
                         end),
     #future{proc = Proc, ref = Ref}.
 
@@ -127,30 +150,10 @@ execute(Fun, #future{ref = Ref} = Self) when is_function(Fun, 0) ->
     do_call(Self, {execute, Ref, self(), Fun}, executing),
     Self.
 
-clone(#future{ref = Ref} = Self) ->
-    Info = do_call(Self, {get_info, Ref, self()}, future_info),
-    case Info of
-        %% future_info, Ref, Result, Executable, Wraps
-        {future_info, Ref, undefined, undefined, undefined} ->
-            new();
-        {future_info, Ref, {value, Result}, undefined, undefined} ->
-            new_static(Result);
-        {future_info, Ref, {error, {Class, Error, Stack}}, undefined, undefined} ->
-            new_static_error(Class, Error, Stack);
-        {future_info, Ref, _, Fun, undefined} when is_function(Fun) ->
-            new(Fun);
-        {future_info, Ref, _, Fun, Wraps} when is_function(Fun), ?is_future(Wraps) ->
-            Wraps2 = Wraps:clone(),
-            wrap(Fun, Wraps2);
-        {future_info, Ref, _, Fun, ListOfWraps} when is_function(Fun), is_list(ListOfWraps) ->
-            ListOfWraps2 = [ X:clone() || X <- ListOfWraps ],
-            wrap(Fun, ListOfWraps2)
-    end.
-
 set_error(Error, #future{} = Self) ->
-    Self:error(error, Error).
+    Self:set_error(error, Error).
 set_error(Class, Error, #future{} = Self) ->
-    Self:error(Class, Error, []).
+    Self:set_error(Class, Error, []).
 
 set_error(Class, Error, Stacktrace, #future{ref = Ref} = Self) ->
     Err = {Class, Error, Stacktrace},
@@ -200,6 +203,69 @@ cancel(#future{proc = Proc, ref = Ref} = F) ->
     Proc:demonitor(Mon),
     F#future{proc = undefined, ref = Ref}.
 
+clone(#future{ref = Ref} = Self) ->
+    Info = do_call(Self, {get_info, Ref, self()}, future_info),
+    case Info of
+        %% future_info, Ref, Result, Executable, Wraps
+        {future_info, Ref, undefined, undefined, undefined} ->
+            new();
+        {future_info, Ref, {value, Result}, undefined, undefined} ->
+            new_static(Result);
+        {future_info, Ref, {error, {Class, Error, Stack}}, undefined, undefined} ->
+            new_static_error(Class, Error, Stack);
+        {future_info, Ref, _, Fun, undefined} when is_function(Fun) ->
+            new(Fun);
+        {future_info, Ref, _, Fun, Wraps}
+          when is_function(Fun), ?is_future(Wraps) ->
+            Wraps2 = Wraps:clone(),
+            wrap(Fun, Wraps2);
+        {future_info, Ref, _, Fun, ListOfWraps}
+          when is_function(Fun), is_list(ListOfWraps) ->
+            ListOfWraps2 = [ X:clone() || X <- ListOfWraps ],
+            wrap(Fun, ListOfWraps2)
+    end.
+
+wait_for(Proc) when element(1, Proc) == gcproc ->
+    new(fun() ->
+                Mon = Proc:monitor(),
+                receive
+                    {'DOWN', Mon, process, _Pid, Reason} ->
+                        Reason
+                end
+        end);
+wait_for(Pid) when is_pid(Pid) ->
+    new(fun() ->
+                Mon = erlang:monitor(process, Pid),
+                receive
+                    {'DOWN', Mon, process, Pid, Reason} ->
+                        Reason
+                end
+        end).
+
+on_done(F, Future) when is_function(F, 1), ?is_future(Future) ->
+    wrap(fun(X) ->
+                 {ok, F(X:get())}
+         end, catcher(Future)).
+
+on_success(F, Future) when is_function(F, 1), ?is_future(Future) ->
+    wrap(fun(X) ->
+                 case X:get() of
+                     {ok, Value} ->
+                         {ok, F(Value)};
+                     _ -> {error, failed}
+                 end
+         end, catcher(Future)).
+
+on_failure(F, Future) when is_function(F, 1), ?is_future(Future) ->
+    wrap(fun(X) ->
+                 case X:get() of
+                     {ok, _Value} ->
+                         {error, succeeded};
+                     {error, Error} ->
+                         {ok, F(Error)}
+                 end
+         end, catcher(Future)).
+
 wrap([Initial0|List]) when ?is_futurable(Initial0) ->
     Initial = new(Initial0),
     lists:foldl(fun wrap/2, Initial, List).
@@ -233,51 +299,46 @@ chain(C1, C2) when ?is_futurable(C1), is_function(C2, 1) ->
 map(Fun, Futures) ->
     new0(fun(X) ->
                  Fs = [ wrap(Fun, F) || F <- X ],
-                 collect(Fs)
+                 do_collect(Fs)
          end,
          [{wraps, Futures}]).
 
 combine(Futures) ->
-    new0(fun(X) -> collect(X) end,
+    new0(fun(X) ->
+                 do_collect(X)
+         end,
          [{wraps, Futures}]).
 
-collect(Futures) ->
-    L = [ {F, attach(F)} || F <- Futures ],
-    Res = [ detach(Attach, F) || {F, Attach} <- L ],
-    %% [ F:done() || F <- Futures ],
-    [ handle(R) || R <- Res ].
+combine_value(Futures) ->
+    F = combine(Futures),
+    F:get().
 
-collect_all(Futures) ->
-    collect(Futures).
+select_full(Futures) ->
+    new0(fun() ->
+                 do_select_any(Futures)
+         end,
+         [{wraps, Futures}]).
 
-collector_any([]) ->
-    error(all_futures_failed);
-collector_any(L) ->
-    receive
-        {future, Ref, Res} ->
-            true = lists:keymember(Ref, 2, L),
-            case Res of
-                {value, _} -> handle(Res);
-                {error, _} ->
-                    L2 = lists:keydelete(Ref, 2, L),
-                    collector_any(L2)
-            end;
-        {'DOWN', Mon, process, _Pid, _Reason} ->
-            {value, _, L2} = lists:keytake(Mon, 3, L),
-            collector_any(L2)
-    end.
+select_full_value(Futures) ->
+    F = select_full(Futures),
+    F:get().
 
-collect_any(Futures) ->
-    Collector0 =
-        future:new(
-          fun() ->
-                  L = [ {F, Ref, Mon} || F <- Futures,
-                                         {Ref, Mon} <- [attach(F)]],
-                  collector_any(L)
-          end),
-    Collector = Collector0:realize(),
-    Collector:get().
+select(Futures) ->
+    new0(fun() ->
+                 {F, _, _} = do_select_any(Futures),
+                 F
+         end,
+         [{wraps, Futures}]).
 
+select_value(Futures) ->
+    F = select(Futures),
+    F:get().
+
+proc(Self) ->
+    Self#future.proc.
+
+ref(Self) ->
+    Self#future.ref.
 
 %% =============================================================================
 %%
@@ -502,7 +563,7 @@ do_call(#future{proc = Proc, ref = Ref}, Msg, RespTag) ->
                   element(2, Resp) == RespTag;
                   element(3, Resp) == Ref ->
             Proc:demonitor(Mon),
-            error(element(4, Resp));
+            erlang:error(element(4, Resp));
         Resp when is_tuple(Resp),
                   element(1, Resp) == RespTag;
                   element(2, Resp) == Ref ->
@@ -520,12 +581,43 @@ do_call(#future{proc = Proc, ref = Ref}, Msg, RespTag) ->
 %%
 %% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+
+do_collect(Futures) ->
+    L = [ {F, attach(F)} || F <- Futures ],
+    Res = [ detach(Attach, F) || {F, Attach} <- L ],
+    %% [ F:done() || F <- Futures ],
+    [ handle(R) || R <- Res ].
+
+do_select_any(Futures) ->
+    L = [ {F, Ref, Mon} || F <- Futures,
+                           {Ref, Mon} <- [attach(F)]],
+    collector_any(L, []).
+
+collector_any([], _) ->
+    erlang:error(all_futures_failed);
+collector_any(L, Failed) ->
+    receive
+        {future, Ref, Res} ->
+            case Res of
+                {value, _} ->
+                    {value, {F, _, _}, L2} = lists:keytake(Ref, 2, L),
+                    {F, Failed, L2};
+                {error, _} ->
+                    {value, {F, _, _}, L2} = lists:keytake(Ref, 2, L),
+                    collector_any(L2, [F|Failed])
+            end;
+        {'DOWN', Mon, process, _Pid, _Reason} ->
+            {value, {F, _, _}, L2} = lists:keytake(Mon, 3, L),
+            collector_any(L2, [F|Failed])
+    end.
+
 do_get(#future{result = Res} = Self) when ?is_realized(Self) ->
     Res;
 do_get(#future{} = Self) ->
     Att = attach(Self),
     detach(Att, Self).
 
+-spec attach(future()) -> future_attachment().
 attach(#future{proc = Proc, ref = Ref, result = undefined} = _Self) ->
     Mon = Proc:monitor(),
     Proc:send({get, Ref, self()}),
@@ -534,6 +626,7 @@ attach(#future{ref = Ref, result = {_Type, _Value} = Result} = _Self) ->
     self() ! {future, Ref, Result},
     {Ref, undefined}.
 
+-spec detach(future_attachment(), future()) -> future_res().
 detach({Ref, Mon}, #future{ref = Ref, proc = Proc} = _Self) ->
     receive
         {future, Ref, Res} ->
@@ -547,16 +640,13 @@ detach({Ref, Mon}, #future{ref = Ref, proc = Proc} = _Self) ->
             reraise_down_reason(Reason)
     end.
 
-handle(Result) ->
-    case Result of
-        {value, Value} ->
-            Value;
-        {error, {_Class, _Error, _ErrorStacktrace} = E} ->
-            reraise(E)
-    end.
+handle({value, Value}) ->
+    Value;
+handle({error, {_Class, _Error, _ErrorStacktrace} = E}) ->
+    reraise(E).
 
 reraise({Class, Error, ErrorStacktrace}) ->
-    {'EXIT', {get_stacktrace, CurrentStacktrace}} = (catch error(get_stacktrace)),
+    {'EXIT', {get_stacktrace, CurrentStacktrace}} = (catch erlang:error(get_stacktrace)),
     erlang:raise(Class, Error, ErrorStacktrace ++ CurrentStacktrace).
 
 reraise_down_reason(Reason) ->
