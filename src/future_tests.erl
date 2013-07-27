@@ -44,6 +44,17 @@ double_set_bad_test() ->
     F:set(42),
     ?assertException(error, badfuture, F:set(wontwork)).
 
+%% set_not_transparent_test() ->
+%%     F = future:new(fun() -> 1 end),
+%%     F2 = future:safe(F),
+%%     F2Proc = F2:proc(),
+%%     F2Proc:unlink(),
+%%     F2Monitor = future:wait_for(F2Proc),
+%%     timer:sleep(10),
+%%     F2:set(2),
+%%     ?assertMatch({notimplemented, _, _}, F2Monitor:get()),
+%%     ?assertException(exit, noproc, F2:get()).
+
 realize_test() ->
     F = future:new(),
     F:set(42),

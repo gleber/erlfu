@@ -462,6 +462,10 @@ loop0(#state{ref = Ref,
             ok;
 
         {execute, Ref, Caller, Fun} ->
+            case proplists:get_value(wraps, Opts) of
+                undefined -> ok;
+                _ -> error({notimplemented, "Set is not transparent for wrapping futures"})
+            end,
             case Worker of
                 undefined ->
                     Caller ! {executing, Ref},
@@ -480,6 +484,10 @@ loop0(#state{ref = Ref,
             loop0(State#state{waiting = [], result = Result, worker = undefined});
 
         {set, Ref, Caller, Result} ->
+            case proplists:get_value(wraps, Opts) of
+                undefined -> ok;
+                _ -> error({notimplemented, "Set is not transparent for wrapping futures"})
+            end,
             case Worker of
                 undefined ->
                     Caller ! {set},
