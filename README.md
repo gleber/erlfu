@@ -18,10 +18,12 @@ referenced on the node where it was created will be garbage collected)
 ## Goals ##
 
 Implement futures/promises framework which allows to chain futures to
-implement reusable mechanisms like timeouts, authentication, sharding,
+implement **reusable mechanisms** like timeouts, authentication, sharding,
 etc.
 
 Inspired by http://monkey.org/~marius/talks/twittersystems/
+
+TODO: write more about futures, terminology and possible uses
 
 ## Roadmap ##
 
